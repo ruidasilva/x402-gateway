@@ -11,28 +11,30 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/merkle-works/x402-gateway/internal/nonce"
+	"github.com/merkle-works/x402-gateway/internal/pool"
 )
 
 const (
 	// Scheme is the x402 payment scheme identifier.
-	Scheme = "bsv-tx-v1+delegated"
+	// Delegation is architectural, not encoded in the scheme string.
+	Scheme = "bsv-tx-v1"
 
 	// Version is the protocol version.
-	Version = "0.1"
+	Version = "1"
 )
 
 // BuildOptions configures challenge generation.
 type BuildOptions struct {
-	PayeeAddress string
-	Amount       uint64
-	Network      string
-	TTL          time.Duration
-	BindHeaders  []string // which request headers to include in binding
+	PayeeLockingScriptHex string        // hex locking script for payments
+	Amount                int64         // price in satoshis
+	Network               string        // "mainnet" or "testnet" (internal only, not on wire)
+	TTL                   time.Duration // challenge validity period
+	BindHeaders           []string      // which request headers to include in binding
 }
 
 // Build creates a 402 challenge from an HTTP request and a leased nonce UTXO.
-func Build(req *http.Request, nonceUTXO *nonce.NonceUTXO, opts BuildOptions) (*Challenge, error) {
+// The challenge uses flat fields per 04-Protocol-Spec.md.
+func Build(req *http.Request, nonceUTXO *pool.UTXO, opts BuildOptions) (*Challenge, error) {
 	// Read and restore the request body
 	var bodyBytes []byte
 	if req.Body != nil {
@@ -44,59 +46,47 @@ func Build(req *http.Request, nonceUTXO *nonce.NonceUTXO, opts BuildOptions) (*C
 		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 	}
 
-	// Build the request binding
-	binding := RequestBinding{
-		Method:      req.Method,
-		Path:        req.URL.Path,
-		QueryHash:   HashQuery(req.URL.Query()),
-		BodyHash:    HashBody(bodyBytes),
-		HeadersHash: HashHeaders(req.Header, opts.BindHeaders),
-		Domain:      req.Host,
-	}
-
-	challenge := &Challenge{
-		Scheme:  Scheme,
-		Network: opts.Network,
-		Version: Version,
-		Nonce: NonceRef{
-			TxID:     nonceUTXO.TxID,
-			Vout:     nonceUTXO.Vout,
-			Script:   nonceUTXO.Script,
-			Satoshis: nonceUTXO.Satoshis,
+	ch := &Challenge{
+		V:      Version,
+		Scheme: Scheme,
+		NonceUTXO: NonceRef{
+			TxID:             nonceUTXO.TxID,
+			Vout:             nonceUTXO.Vout,
+			LockingScriptHex: nonceUTXO.Script,
+			Satoshis:         int64(nonceUTXO.Satoshis),
 		},
-		Payee:          opts.PayeeAddress,
-		Amount:         opts.Amount,
-		Expiry:         time.Now().Add(opts.TTL).Unix(),
-		RequestBinding: binding,
+		AmountSats:            opts.Amount,
+		PayeeLockingScriptHex: opts.PayeeLockingScriptHex,
+		ExpiresAt:             time.Now().Add(opts.TTL).Unix(),
+
+		// Flat request binding fields (per spec)
+		Domain:           req.Host,
+		Method:           req.Method,
+		Path:             req.URL.Path,
+		Query:            req.URL.RawQuery,
+		ReqHeadersSHA256: HashHeaders(req.Header, opts.BindHeaders),
+		ReqBodySHA256:    HashBody(bodyBytes),
+
+		// Settlement parameters
+		RequireMempoolAccept:  true,
+		ConfirmationsRequired: 0,
 	}
 
-	// Compute the challenge SHA-256 (hash of deterministic JSON, excluding the hash field itself)
-	challengeHash, err := computeChallengeHash(challenge)
-	if err != nil {
-		return nil, fmt.Errorf("compute challenge hash: %w", err)
-	}
-	challenge.ChallengeSHA256 = challengeHash
-
-	return challenge, nil
+	return ch, nil
 }
 
-// computeChallengeHash produces a SHA-256 hex digest of the challenge JSON
-// with the ChallengeSHA256 field set to empty (to avoid circular hashing).
-func computeChallengeHash(c *Challenge) (string, error) {
-	// Create a copy with empty hash field for deterministic hashing
-	hashable := *c
-	hashable.ChallengeSHA256 = ""
-
-	data, err := json.Marshal(hashable)
+// ComputeHash produces a SHA-256 hex digest of the challenge
+// using canonical (sorted-key) JSON serialisation (RFC 8785 style).
+func ComputeHash(c *Challenge) (string, error) {
+	data, err := CanonicalJSON(c)
 	if err != nil {
 		return "", err
 	}
-
 	h := sha256.Sum256(data)
 	return hex.EncodeToString(h[:]), nil
 }
 
-// Encode serializes a challenge to base64url for use in the WWW-Authenticate header.
+// Encode serializes a challenge to base64url for the X402-Challenge header.
 func Encode(c *Challenge) (string, error) {
 	data, err := json.Marshal(c)
 	if err != nil {
@@ -120,11 +110,13 @@ func Decode(encoded string) (*Challenge, error) {
 	return &c, nil
 }
 
-// Verify checks that a challenge's SHA-256 is valid.
-func Verify(c *Challenge) (bool, error) {
-	expected, err := computeChallengeHash(c)
-	if err != nil {
-		return false, err
+// ValidateSchemeVersion checks that a challenge uses the expected scheme and version.
+func ValidateSchemeVersion(c *Challenge) error {
+	if c.Scheme != Scheme {
+		return fmt.Errorf("invalid_scheme: got %q, want %q", c.Scheme, Scheme)
 	}
-	return expected == c.ChallengeSHA256, nil
+	if c.V != Version {
+		return fmt.Errorf("invalid_version: got %q, want %q", c.V, Version)
+	}
+	return nil
 }

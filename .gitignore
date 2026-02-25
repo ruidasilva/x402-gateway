@@ -1,6 +1,10 @@
 # Binaries
 x402-server
 x402-client
+server
+client
+keygen
+setup
 *.exe
 *.exe~
 *.dll
@@ -31,3 +35,8 @@ Thumbs.db
 # Build output
 /bin/
 /dist/
+
+# React dashboard
+dashboard/node_modules/
+dashboard/dist/
+cmd/server/static/

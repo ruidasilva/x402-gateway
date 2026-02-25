@@ -1,0 +1,21 @@
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+export default defineConfig({
+  plugins: [react()],
+  build: {
+    outDir: '../cmd/server/static',
+    emptyOutDir: true,
+  },
+  server: {
+    port: 5173,
+    proxy: {
+      '/api': 'http://localhost:8402',
+      '/demo': 'http://localhost:8402',
+      '/health': 'http://localhost:8402',
+      '/v1': 'http://localhost:8402',
+      '/nonce': 'http://localhost:8402',
+      '/delegate': 'http://localhost:8402',
+    },
+  },
+})

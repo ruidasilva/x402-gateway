@@ -4,42 +4,29 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
-	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 )
 
+// collapseWS replaces runs of whitespace with a single space.
+var collapseWS = regexp.MustCompile(`\s+`)
+
 // HashBody returns the SHA-256 hex digest of the request body.
+// Per spec §3.2: SHA256(raw_body_bytes) → hex. If no body: SHA256("") → hex.
 func HashBody(body []byte) string {
 	h := sha256.Sum256(body)
 	return hex.EncodeToString(h[:])
 }
 
-// HashQuery returns the SHA-256 hex digest of sorted query parameters.
-// Keys are sorted lexicographically; each key=value pair is joined with "&".
-func HashQuery(query url.Values) string {
-	keys := make([]string, 0, len(query))
-	for k := range query {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	var parts []string
-	for _, k := range keys {
-		vals := query[k]
-		sort.Strings(vals)
-		for _, v := range vals {
-			parts = append(parts, k+"="+v)
-		}
-	}
-
-	canonical := strings.Join(parts, "&")
-	h := sha256.Sum256([]byte(canonical))
-	return hex.EncodeToString(h[:])
-}
-
 // HashHeaders returns the SHA-256 hex digest of selected headers in canonical form.
-// Only the specified header keys are included, lowercased and sorted.
+// Per spec (04-Protocol-Spec.md §3.1):
+//   - Lowercase header names
+//   - Trim surrounding whitespace in values
+//   - Collapse internal runs of whitespace to single space
+//   - Sort by header name (lexicographic)
+//   - Join as: name:value\n for each header
+//   - SHA256(utf8(canonical_string)) → hex
 func HashHeaders(headers http.Header, keys []string) string {
 	sortedKeys := make([]string, len(keys))
 	copy(sortedKeys, keys)
@@ -48,11 +35,16 @@ func HashHeaders(headers http.Header, keys []string) string {
 	var parts []string
 	for _, k := range sortedKeys {
 		lk := strings.ToLower(k)
-		val := headers.Get(k)
-		parts = append(parts, lk+":"+strings.TrimSpace(val))
+		val := strings.TrimSpace(headers.Get(k))
+		val = collapseWS.ReplaceAllString(val, " ")
+		parts = append(parts, lk+":"+val)
 	}
 
+	// Each header line ends with \n per spec
 	canonical := strings.Join(parts, "\n")
+	if len(parts) > 0 {
+		canonical += "\n"
+	}
 	h := sha256.Sum256([]byte(canonical))
 	return hex.EncodeToString(h[:])
 }

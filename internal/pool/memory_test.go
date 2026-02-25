@@ -1,12 +1,12 @@
-package nonce
+package pool
 
 import (
 	"context"
 	"testing"
 	"time"
 
-	"github.com/bsv-blockchain/go-sdk/transaction"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
+	"github.com/bsv-blockchain/go-sdk/transaction"
 )
 
 // testBroadcaster is a mock broadcaster for tests.
@@ -26,7 +26,7 @@ func (tb *testBroadcaster) BroadcastCtx(ctx context.Context, tx *transaction.Tra
 	return tb.Broadcast(tx)
 }
 
-func newTestPool(t *testing.T) (*Pool, *testBroadcaster) {
+func newTestPool(t *testing.T) (*MemoryPool, *testBroadcaster) {
 	t.Helper()
 
 	key, err := ec.NewPrivateKey()
@@ -35,7 +35,7 @@ func newTestPool(t *testing.T) (*Pool, *testBroadcaster) {
 	}
 
 	bc := &testBroadcaster{}
-	pool, err := NewPool(key, false, 5*time.Minute, bc)
+	pool, err := NewMemoryPool(key, false, 5*time.Minute, bc)
 	if err != nil {
 		t.Fatalf("create pool: %v", err)
 	}
@@ -43,7 +43,7 @@ func newTestPool(t *testing.T) (*Pool, *testBroadcaster) {
 	return pool, bc
 }
 
-func TestNewPool(t *testing.T) {
+func TestNewMemoryPool(t *testing.T) {
 	pool, _ := newTestPool(t)
 
 	if pool.Address() == "" {
@@ -62,8 +62,8 @@ func TestAddExistingAndLease(t *testing.T) {
 		t.Fatalf("locking script: %v", err)
 	}
 
-	// Add 3 nonce UTXOs
-	utxos := []NonceUTXO{
+	// Add 3 UTXOs
+	utxos := []UTXO{
 		{TxID: "aaaa" + repeatHex("a", 60), Vout: 0, Script: scriptHex, Satoshis: 1},
 		{TxID: "aaaa" + repeatHex("a", 60), Vout: 1, Script: scriptHex, Satoshis: 1},
 		{TxID: "bbbb" + repeatHex("b", 60), Vout: 0, Script: scriptHex, Satoshis: 1},
@@ -92,7 +92,7 @@ func TestLeaseExhaustion(t *testing.T) {
 
 	scriptHex, _ := pool.LockingScriptHex()
 
-	pool.AddExisting([]NonceUTXO{
+	pool.AddExisting([]UTXO{
 		{TxID: repeatHex("c", 64), Vout: 0, Script: scriptHex, Satoshis: 1},
 	})
 
@@ -115,14 +115,14 @@ func TestMarkSpentAndLookup(t *testing.T) {
 	scriptHex, _ := pool.LockingScriptHex()
 	txid := repeatHex("d", 64)
 
-	pool.AddExisting([]NonceUTXO{
+	pool.AddExisting([]UTXO{
 		{TxID: txid, Vout: 0, Script: scriptHex, Satoshis: 1},
 	})
 
 	// Lookup
 	n := pool.Lookup(txid, 0)
 	if n == nil {
-		t.Fatal("expected to find nonce")
+		t.Fatal("expected to find UTXO")
 	}
 	if n.Status != StatusAvailable {
 		t.Errorf("expected available, got %s", n.Status)
@@ -139,10 +139,10 @@ func TestMarkSpentAndLookup(t *testing.T) {
 func TestReclaim(t *testing.T) {
 	key, _ := ec.NewPrivateKey()
 	bc := &testBroadcaster{}
-	pool, _ := NewPool(key, false, 1*time.Millisecond, bc) // very short TTL
+	pool, _ := NewMemoryPool(key, false, 1*time.Millisecond, bc) // very short TTL
 
 	scriptHex, _ := pool.LockingScriptHex()
-	pool.AddExisting([]NonceUTXO{
+	pool.AddExisting([]UTXO{
 		{TxID: repeatHex("e", 64), Vout: 0, Script: scriptHex, Satoshis: 1},
 	})
 
@@ -172,17 +172,27 @@ func TestStats(t *testing.T) {
 	pool, _ := newTestPool(t)
 
 	scriptHex, _ := pool.LockingScriptHex()
-	pool.AddExisting([]NonceUTXO{
+	pool.AddExisting([]UTXO{
 		{TxID: repeatHex("f", 64), Vout: 0, Script: scriptHex, Satoshis: 1},
 		{TxID: repeatHex("f", 64), Vout: 1, Script: scriptHex, Satoshis: 1},
 		{TxID: repeatHex("f", 64), Vout: 2, Script: scriptHex, Satoshis: 1},
 	})
 
-	// Lease one
-	pool.Lease()
+	// Lease one — returns a non-deterministic UTXO from the map
+	leased, err := pool.Lease()
+	if err != nil {
+		t.Fatalf("lease: %v", err)
+	}
 
-	// Mark one spent
-	pool.MarkSpent(repeatHex("f", 64), 2)
+	// Mark a DIFFERENT one as spent (pick one that wasn't leased)
+	spentVout := uint32(0)
+	for _, v := range []uint32{0, 1, 2} {
+		if v != leased.Vout {
+			spentVout = v
+			break
+		}
+	}
+	pool.MarkSpent(repeatHex("f", 64), spentVout)
 
 	stats := pool.Stats()
 	if stats.Total != 3 {
@@ -197,6 +207,78 @@ func TestStats(t *testing.T) {
 	if stats.Spent != 1 {
 		t.Errorf("expected 1 spent, got %d", stats.Spent)
 	}
+}
+
+func TestLeaseN(t *testing.T) {
+	pool, _ := newTestPool(t)
+
+	scriptHex, _ := pool.LockingScriptHex()
+	pool.AddExisting([]UTXO{
+		{TxID: repeatHex("a", 64), Vout: 0, Script: scriptHex, Satoshis: 1},
+		{TxID: repeatHex("a", 64), Vout: 1, Script: scriptHex, Satoshis: 1},
+		{TxID: repeatHex("a", 64), Vout: 2, Script: scriptHex, Satoshis: 1},
+		{TxID: repeatHex("a", 64), Vout: 3, Script: scriptHex, Satoshis: 1},
+		{TxID: repeatHex("a", 64), Vout: 4, Script: scriptHex, Satoshis: 1},
+	})
+
+	// Lease 3
+	leased, err := pool.LeaseN(3)
+	if err != nil {
+		t.Fatalf("LeaseN: %v", err)
+	}
+	if len(leased) != 3 {
+		t.Errorf("expected 3 leased, got %d", len(leased))
+	}
+	for _, u := range leased {
+		if u.Status != StatusLeased {
+			t.Errorf("expected leased, got %s", u.Status)
+		}
+	}
+	if pool.Available() != 2 {
+		t.Errorf("expected 2 available after LeaseN(3), got %d", pool.Available())
+	}
+
+	// Try to lease 3 more — should fail (only 2 available)
+	_, err = pool.LeaseN(3)
+	if err == nil {
+		t.Error("expected error when requesting more UTXOs than available")
+	}
+
+	// Lease remaining 2 — should succeed
+	leased2, err := pool.LeaseN(2)
+	if err != nil {
+		t.Fatalf("LeaseN(2): %v", err)
+	}
+	if len(leased2) != 2 {
+		t.Errorf("expected 2 leased, got %d", len(leased2))
+	}
+	if pool.Available() != 0 {
+		t.Errorf("expected 0 available, got %d", pool.Available())
+	}
+}
+
+func TestLeaseNZero(t *testing.T) {
+	pool, _ := newTestPool(t)
+
+	_, err := pool.LeaseN(0)
+	if err == nil {
+		t.Error("expected error for LeaseN(0)")
+	}
+
+	_, err = pool.LeaseN(-1)
+	if err == nil {
+		t.Error("expected error for LeaseN(-1)")
+	}
+}
+
+func TestPoolInterface(t *testing.T) {
+	mp, _ := newTestPool(t)
+
+	// Verify MemoryPool satisfies Pool interface
+	var p Pool = mp
+	_ = p.Address()
+	_ = p.Available()
+	_ = p.Stats()
 }
 
 func repeatHex(ch string, length int) string {

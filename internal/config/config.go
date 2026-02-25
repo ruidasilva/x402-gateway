@@ -9,8 +9,11 @@ import (
 
 // Config holds all gateway configuration.
 type Config struct {
-	// BSV private key in WIF format
+	// BSV private key in WIF format (legacy single-key mode)
 	BSVPrivateKey string
+
+	// BIP32 extended private key (HD wallet mode, alternative to BSV_PRIVATE_KEY)
+	XPRIV string
 
 	// BSV network: "mainnet" or "testnet"
 	BSVNetwork string
@@ -27,7 +30,7 @@ type Config struct {
 	// Nonce lease TTL
 	NonceLeaseTTL time.Duration
 
-	// Fee rate in sat/byte
+	// Fee rate in sat/byte (BSV standard: 1 sat/KB = 0.001 sat/byte)
 	FeeRate float64
 
 	// Broadcaster type: "woc" or "arc"
@@ -35,27 +38,47 @@ type Config struct {
 
 	// Daily fee budget in satoshis (0 = unlimited)
 	DailyFeeBudget uint64
+
+	// Redis configuration
+	RedisURL     string // REDIS_URL (e.g. redis://localhost:6379)
+	RedisEnabled bool   // REDIS_ENABLED (true = Redis pools, false = in-memory)
+
+	// Pool thresholds for auto-refill
+	PoolReplenishThreshold int // trigger refill when available < this (default 500)
+	PoolOptimalSize        int // target size after refill (default 5000)
 }
 
-// Load reads configuration from environment variables with sensible defaults.
+// Load reads configuration from environment variables.
+// Required: one of XPRIV or BSV_PRIVATE_KEY, plus FEE_RATE and BROADCASTER.
 func Load() (*Config, error) {
 	cfg := &Config{
 		BSVPrivateKey:  os.Getenv("BSV_PRIVATE_KEY"),
+		XPRIV:          os.Getenv("XPRIV"),
 		BSVNetwork:     envOrDefault("BSV_NETWORK", "testnet"),
 		PayeeAddress:   os.Getenv("PAYEE_ADDRESS"),
 		Port:           envIntOrDefault("PORT", 8402),
 		NoncePoolSize:  envIntOrDefault("NONCE_POOL_SIZE", 100),
 		NonceLeaseTTL:  time.Duration(envIntOrDefault("NONCE_LEASE_TTL", 300)) * time.Second,
-		FeeRate:        envFloatOrDefault("FEE_RATE", 1.0),
-		Broadcaster:    envOrDefault("BROADCASTER", "woc"),
-		DailyFeeBudget: uint64(envIntOrDefault("DAILY_FEE_BUDGET", 0)),
+		FeeRate:        envFloatOrDefault("FEE_RATE", 0),
+		Broadcaster:    os.Getenv("BROADCASTER"),
+		DailyFeeBudget:         uint64(envIntOrDefault("DAILY_FEE_BUDGET", 0)),
+		RedisURL:               os.Getenv("REDIS_URL"),
+		RedisEnabled:           envBoolOrDefault("REDIS_ENABLED", false),
+		PoolReplenishThreshold: envIntOrDefault("POOL_REPLENISH_THRESHOLD", 500),
+		PoolOptimalSize:        envIntOrDefault("POOL_OPTIMAL_SIZE", 5000),
 	}
 
-	if cfg.BSVPrivateKey == "" {
-		return nil, fmt.Errorf("BSV_PRIVATE_KEY is required")
+	if cfg.BSVPrivateKey == "" && cfg.XPRIV == "" {
+		return nil, fmt.Errorf("one of XPRIV or BSV_PRIVATE_KEY is required")
 	}
 	if cfg.BSVNetwork != "mainnet" && cfg.BSVNetwork != "testnet" {
 		return nil, fmt.Errorf("BSV_NETWORK must be 'mainnet' or 'testnet', got %q", cfg.BSVNetwork)
+	}
+	if cfg.FeeRate <= 0 {
+		return nil, fmt.Errorf("FEE_RATE is required (set in .env, e.g. FEE_RATE=0.001 for BSV standard 1 sat/KB)")
+	}
+	if cfg.Broadcaster == "" {
+		return nil, fmt.Errorf("BROADCASTER is required (set in .env, e.g. BROADCASTER=mock or BROADCASTER=woc)")
 	}
 
 	return cfg, nil
@@ -78,6 +101,13 @@ func envIntOrDefault(key string, def int) int {
 		if i, err := strconv.Atoi(v); err == nil {
 			return i
 		}
+	}
+	return def
+}
+
+func envBoolOrDefault(key string, def bool) bool {
+	if v := os.Getenv(key); v != "" {
+		return v == "true" || v == "1" || v == "yes"
 	}
 	return def
 }

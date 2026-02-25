@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -10,13 +12,19 @@ import (
 	"syscall"
 	"time"
 
-	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
+	"github.com/bsv-blockchain/go-sdk/script"
+	"github.com/bsv-blockchain/go-sdk/transaction"
+	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/merkle-works/x402-gateway/internal/broadcast"
 	"github.com/merkle-works/x402-gateway/internal/config"
+	"github.com/merkle-works/x402-gateway/internal/dashboard"
 	"github.com/merkle-works/x402-gateway/internal/delegator"
+	"github.com/merkle-works/x402-gateway/internal/feedelegator"
 	"github.com/merkle-works/x402-gateway/internal/gatekeeper"
-	"github.com/merkle-works/x402-gateway/internal/nonce"
+	"github.com/merkle-works/x402-gateway/internal/hdwallet"
+	"github.com/merkle-works/x402-gateway/internal/pool"
 	"github.com/merkle-works/x402-gateway/internal/pricing"
 	"github.com/merkle-works/x402-gateway/internal/replay"
 )
@@ -41,49 +49,150 @@ func main() {
 		"fee_rate", cfg.FeeRate,
 	)
 
-	// Parse the delegator private key
-	key, err := ec.PrivateKeyFromWif(cfg.BSVPrivateKey)
-	if err != nil {
-		logger.Error("invalid BSV_PRIVATE_KEY", "error", err)
-		os.Exit(1)
-	}
-
 	mainnet := cfg.IsMainnet()
 
-	// For v0.1, we use a mock broadcaster.
-	// TODO: Replace with a real WoC/ARC broadcaster for testnet/mainnet.
-	broadcaster := &broadcast.MockBroadcaster{}
+	// Derive keys — xPriv (HD wallet) or WIF (legacy single-key)
+	var keys *hdwallet.DerivedKeys
+	if cfg.XPRIV != "" {
+		keys, err = hdwallet.DeriveFromXPriv(cfg.XPRIV, mainnet)
+		if err != nil {
+			logger.Error("invalid XPRIV", "error", err)
+			os.Exit(1)
+		}
+		logger.Info("HD wallet mode (xPriv)",
+			"nonce_address", keys.NonceAddress,
+			"fee_address", keys.FeeAddress,
+			"treasury_address", keys.TreasuryAddress,
+		)
+	} else {
+		keys, err = hdwallet.DeriveFromWIF(cfg.BSVPrivateKey, mainnet)
+		if err != nil {
+			logger.Error("invalid BSV_PRIVATE_KEY", "error", err)
+			os.Exit(1)
+		}
+		logger.Info("single-key mode (WIF)", "address", keys.NonceAddress)
+	}
 
-	// Create nonce pool
-	noncePool, err := nonce.NewPool(key, mainnet, cfg.NonceLeaseTTL, broadcaster)
-	if err != nil {
-		logger.Error("failed to create nonce pool", "error", err)
+	// Backward-compatible: `key` is used by components that expect a single key
+	// (delegator, fee delegator, demo build-proof). In HD mode, use nonce key.
+	key := keys.NonceKey
+
+	// Select broadcaster based on config (BROADCASTER is required in .env)
+	var bcast transaction.Broadcaster
+	demoMode := false
+	switch cfg.Broadcaster {
+	case "woc":
+		bcast = broadcast.NewWoCBroadcaster(mainnet)
+	case "mock":
+		bcast = &broadcast.MockBroadcaster{}
+		demoMode = true
+	default:
+		logger.Error("unsupported BROADCASTER value", "value", cfg.Broadcaster)
 		os.Exit(1)
 	}
 
-	// Create fee UTXO pool (separate pool for fee inputs with larger denominations)
-	feePool, err := nonce.NewPool(key, mainnet, cfg.NonceLeaseTTL, broadcaster)
-	if err != nil {
-		logger.Error("failed to create fee pool", "error", err)
-		os.Exit(1)
+	// Create UTXO pools — either Redis-backed (production) or in-memory (demo)
+	// In HD wallet mode, nonce and fee pools use purpose-specific derived keys.
+	var noncePool, feePool pool.Pool
+	if cfg.RedisEnabled {
+		// Redis-backed pools — persistent across restarts
+		opts, err := redis.ParseURL(cfg.RedisURL)
+		if err != nil {
+			logger.Error("invalid REDIS_URL", "error", err)
+			os.Exit(1)
+		}
+		rdb := redis.NewClient(opts)
+
+		// Verify Redis connectivity
+		if err := rdb.Ping(context.Background()).Err(); err != nil {
+			logger.Error("cannot connect to Redis", "url", cfg.RedisURL, "error", err)
+			os.Exit(1)
+		}
+		logger.Info("connected to Redis", "url", cfg.RedisURL)
+
+		np, err := pool.NewRedisPool(rdb, "nonce:", keys.NonceKey, mainnet, cfg.NonceLeaseTTL)
+		if err != nil {
+			logger.Error("failed to create nonce pool", "error", err)
+			os.Exit(1)
+		}
+		noncePool = np
+
+		fp, err := pool.NewRedisPool(rdb, "fee:", keys.FeeKey, mainnet, cfg.NonceLeaseTTL)
+		if err != nil {
+			logger.Error("failed to create fee pool", "error", err)
+			os.Exit(1)
+		}
+		feePool = fp
+	} else {
+		// In-memory pools — for demo mode and testing
+		np, err := pool.NewMemoryPool(keys.NonceKey, mainnet, cfg.NonceLeaseTTL, bcast)
+		if err != nil {
+			logger.Error("failed to create nonce pool", "error", err)
+			os.Exit(1)
+		}
+		noncePool = np
+
+		fp, err := pool.NewMemoryPool(keys.FeeKey, mainnet, cfg.NonceLeaseTTL, bcast)
+		if err != nil {
+			logger.Error("failed to create fee pool", "error", err)
+			os.Exit(1)
+		}
+		feePool = fp
 	}
+
+	// Demo mode — auto-seed pools with synthetic UTXOs when using MockBroadcaster.
+	// Works with both Redis and in-memory pools.
+	if demoMode {
+		seedDemoPools(noncePool, feePool, cfg.NoncePoolSize, cfg.FeeRate, logger)
+	}
+
+	// Create event bus for SSE streaming to dashboard
+	eventBus := NewEventBus()
 
 	// Create replay cache (10 minute TTL, 10K entries)
 	replayCache := replay.New(10*time.Minute, 10000)
 
-	// Create delegator
-	deleg, err := delegator.New(key, mainnet, noncePool, feePool, broadcaster, replayCache, cfg.FeeRate)
+	// Create delegator (the foundational settlement primitive)
+	// Default: delegator broadcasts (per spec). Configurable via the broadcast flag.
+	deleg, err := delegator.New(key, mainnet, noncePool, feePool, bcast, replayCache, cfg.FeeRate, true)
 	if err != nil {
 		logger.Error("failed to create delegator", "error", err)
 		os.Exit(1)
 	}
 
-	// Determine payee address (default to the delegator's own address)
+	// Determine payee address and locking script
 	payeeAddr := cfg.PayeeAddress
 	if payeeAddr == "" {
 		payeeAddr = noncePool.Address()
 		logger.Info("no PAYEE_ADDRESS set, using delegator address", "address", payeeAddr)
 	}
+
+	// Convert payee address to locking script hex (spec requires script, not address)
+	payeeLockingScriptHex, err := addressToLockingScriptHex(payeeAddr)
+	if err != nil {
+		logger.Error("failed to derive payee locking script", "error", err)
+		os.Exit(1)
+	}
+
+	// Create bounded challenge cache (5 min TTL, 10K max)
+	challengeCache := gatekeeper.NewChallengeCache(5*time.Minute, 10000)
+
+	// Create fee delegator handler (Node.js-compatible POST /api/v1/tx)
+	feeDelegatorHandler, err := feedelegator.NewHandler(keys.FeeKey, mainnet, feePool, cfg.FeeRate)
+	if err != nil {
+		logger.Error("failed to create fee delegator handler", "error", err)
+		os.Exit(1)
+	}
+
+	// Record server start time for uptime tracking
+	startTime := time.Now()
+
+	// Create dashboard API (React dashboard backend)
+	dashAPI := dashboard.NewDashboardAPI(
+		cfg, keys, noncePool, feePool,
+		keys.TreasuryKey, mainnet, bcast,
+		startTime, payeeAddr,
+	)
 
 	// Start nonce lease reclaim loop
 	stop := make(chan struct{})
@@ -96,16 +205,17 @@ func main() {
 
 	// Health check
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"status":  "ok",
-			"version": "0.1.0",
-			"network": cfg.BSVNetwork,
+			"status":     "ok",
+			"version":    "1.0.0",
+			"network":    cfg.BSVNetwork,
 			"nonce_pool": noncePool.Stats(),
 			"fee_pool":   feePool.Stats(),
 		})
 	})
 
-	// Nonce lease endpoint
+	// Nonce lease endpoint (nonce allocator)
 	mux.HandleFunc("GET /nonce/lease", func(w http.ResponseWriter, r *http.Request) {
 		n, err := noncePool.Lease()
 		if err != nil {
@@ -121,7 +231,7 @@ func main() {
 		})
 	})
 
-	// Delegation endpoint
+	// Fee delegation endpoint (called by client directly, per spec step 4)
 	mux.HandleFunc("POST /delegate/x402", func(w http.ResponseWriter, r *http.Request) {
 		var req delegator.DelegationRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -132,9 +242,18 @@ func main() {
 			return
 		}
 
+		// Enrich request with server-side data from nonce pool
+		nonceUTXO := noncePool.Lookup(req.NonceTxID, req.NonceVout)
+		if nonceUTXO != nil {
+			req.NonceLockingScriptHex = nonceUTXO.Script
+			req.NonceSatoshis = int64(nonceUTXO.Satoshis)
+			req.ExpectedPayeeLockingScriptHex = payeeLockingScriptHex
+		}
+
 		result, err := deleg.Accept(req)
 		if err != nil {
 			if delegErr, ok := err.(*delegator.DelegationError); ok {
+				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(delegErr.Status)
 				json.NewEncoder(w).Encode(delegErr)
 				return
@@ -150,19 +269,19 @@ func main() {
 		json.NewEncoder(w).Encode(result)
 	})
 
-	// --- Protected endpoint (gated by x402 middleware) ---
+	// --- Protected endpoint (gated by x402 middleware — gatekeeper is VERIFY-ONLY) ---
 
 	gatekeeperCfg := gatekeeper.Config{
-		Delegator:    deleg,
-		NoncePool:    noncePool,
-		PayeeAddress: payeeAddr,
-		Network:      cfg.BSVNetwork,
-		PricingFunc:  pricing.Fixed(100), // 100 sats per request
-		ChallengeTTL: 5 * time.Minute,
-		BindHeaders:  []string{},
+		NoncePool:             noncePool,
+		ReplayCache:           replayCache,
+		ChallengeCache:        challengeCache,
+		PayeeLockingScriptHex: payeeLockingScriptHex,
+		Network:               cfg.BSVNetwork,
+		PricingFunc:           pricing.Fixed(100),
+		ChallengeTTL:          5 * time.Minute,
+		BindHeaders:           gatekeeper.HeaderAllowlist,
 	}
 
-	// Demo expensive endpoint
 	expensive := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
@@ -175,16 +294,37 @@ func main() {
 	mux.Handle("GET /v1/expensive", gatekeeper.Middleware(gatekeeperCfg)(expensive))
 	mux.Handle("POST /v1/expensive", gatekeeper.Middleware(gatekeeperCfg)(expensive))
 
+	// --- Fee delegator API (Node.js-compatible drop-in) ---
+	mux.HandleFunc("POST /api/v1/tx", feeDelegatorHandler.HandleDelegateTx())
+	mux.HandleFunc("GET /api/utxo/stats", feeDelegatorHandler.HandleUTXOStats(cfg.RedisEnabled, noncePool))
+	mux.HandleFunc("GET /api/utxo/health", feeDelegatorHandler.HandleUTXOHealth(noncePool))
+	mux.HandleFunc("GET /api/health", feeDelegatorHandler.HandleHealth(startTime))
+
+	// --- Dashboard API (React dashboard backend) ---
+	dashAPI.RegisterRoutes(mux)
+
+	// SSE event stream (available in all modes, not just demo)
+	mux.HandleFunc("GET /api/v1/events/stream", handleEvents(eventBus))
+
+	// --- Demo endpoints (build-proof, info) ---
+	if demoMode {
+		mux.HandleFunc("POST /demo/build-proof", handleBuildProof(key, mainnet, deleg, noncePool, payeeLockingScriptHex))
+		mux.HandleFunc("GET /demo/events", handleEvents(eventBus)) // backward compat
+		mux.HandleFunc("GET /demo/info", handleDemoInfo(cfg, noncePool, feePool, payeeAddr))
+	}
+
+	// --- React Dashboard SPA (available in all modes) ---
+	mux.HandleFunc("GET /", handleDashboardSPA())
+
 	// Start server
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	server := &http.Server{
 		Addr:         addr,
-		Handler:      loggingMiddleware(mux),
+		Handler:      loggingMiddleware(mux, eventBus, dashAPI.Stats()),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
 
-	// Graceful shutdown
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -194,22 +334,47 @@ func main() {
 		server.Close()
 	}()
 
-	logger.Info("x402 gateway starting",
-		"addr", addr,
-		"payee", payeeAddr,
-		"network", cfg.BSVNetwork,
-	)
-	fmt.Printf("\n  x402 BSV Gateway v0.1\n")
+	logger.Info("x402 gateway starting", "addr", addr, "payee", payeeAddr, "network", cfg.BSVNetwork)
+	fmt.Printf("\n  x402 BSV Gateway v1.0\n")
 	fmt.Printf("  ─────────────────────\n")
 	fmt.Printf("  Network:    %s\n", cfg.BSVNetwork)
-	fmt.Printf("  Address:    %s\n", payeeAddr)
+	if cfg.XPRIV != "" {
+		fmt.Printf("  Key mode:   HD wallet (xPriv)\n")
+		fmt.Printf("  Nonce addr: %s\n", keys.NonceAddress)
+		fmt.Printf("  Fee addr:   %s\n", keys.FeeAddress)
+		fmt.Printf("  Treasury:   %s\n", keys.TreasuryAddress)
+	} else {
+		fmt.Printf("  Key mode:   single key (WIF)\n")
+		fmt.Printf("  Address:    %s\n", keys.NonceAddress)
+	}
+	fmt.Printf("  Payee:      %s\n", payeeAddr)
 	fmt.Printf("  Port:       %d\n", cfg.Port)
-	fmt.Printf("  Nonce pool: %d\n\n", cfg.NoncePoolSize)
-	fmt.Printf("  Endpoints:\n")
+	fmt.Printf("  Nonce pool: %d\n", cfg.NoncePoolSize)
+	if cfg.RedisEnabled {
+		fmt.Printf("  Storage:    Redis (%s)\n", cfg.RedisURL)
+	} else {
+		fmt.Printf("  Storage:    in-memory\n")
+	}
+	if demoMode {
+		fmt.Printf("  Mode:       demo (MockBroadcaster)\n")
+	} else {
+		fmt.Printf("  Mode:       live (%s)\n", cfg.Broadcaster)
+	}
+	fmt.Printf("  Dashboard:  http://localhost:%d/\n", cfg.Port)
+	fmt.Printf("\n  Endpoints:\n")
 	fmt.Printf("    GET  /health          Health check\n")
-	fmt.Printf("    GET  /nonce/lease     Lease a nonce UTXO\n")
-	fmt.Printf("    POST /delegate/x402   Submit payment proof\n")
-	fmt.Printf("    GET  /v1/expensive    Protected demo endpoint (100 sats)\n\n")
+	fmt.Printf("    GET  /nonce/lease     Nonce allocator\n")
+	fmt.Printf("    POST /delegate/x402   Fee delegation (x402)\n")
+	fmt.Printf("    GET  /v1/expensive    Protected (100 sats)\n")
+	fmt.Printf("    POST /api/v1/tx       Fee delegator API (Node.js-compat)\n")
+	fmt.Printf("    GET  /api/utxo/stats  UTXO pool stats\n")
+	fmt.Printf("    GET  /api/utxo/health UTXO pool health\n")
+	fmt.Printf("    GET  /api/health      API health\n")
+	fmt.Printf("    GET  /api/v1/config   Dashboard config\n")
+	fmt.Printf("    GET  /api/v1/stats/*  Dashboard analytics\n")
+	fmt.Printf("    GET  /api/v1/treasury/* Treasury mgmt\n")
+	fmt.Printf("    GET  /                Dashboard (React SPA)\n")
+	fmt.Printf("\n")
 
 	if err := server.ListenAndServe(); err != http.ErrServerClosed {
 		logger.Error("server error", "error", err)
@@ -217,18 +382,49 @@ func main() {
 	}
 }
 
-// loggingMiddleware logs each HTTP request.
-func loggingMiddleware(next http.Handler) http.Handler {
+func addressToLockingScriptHex(addr string) (string, error) {
+	a, err := script.NewAddressFromString(addr)
+	if err != nil {
+		return "", fmt.Errorf("parse address %q: %w", addr, err)
+	}
+	s, err := p2pkh.Lock(a)
+	if err != nil {
+		return "", fmt.Errorf("create locking script: %w", err)
+	}
+	return hex.EncodeToString(*s), nil
+}
+
+func loggingMiddleware(next http.Handler, eventBus *EventBus, stats *dashboard.StatsCollector) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rw := &responseWriter{ResponseWriter: w, status: 200}
 		next.ServeHTTP(rw, r)
-		slog.Info("http",
-			"method", r.Method,
-			"path", r.URL.Path,
-			"status", rw.status,
-			"duration_ms", time.Since(start).Milliseconds(),
-		)
+
+		duration := time.Since(start)
+		slog.Info("http", "method", r.Method, "path", r.URL.Path, "status", rw.status, "duration_ms", duration.Milliseconds())
+
+		// Record stats for dashboard analytics
+		if stats != nil {
+			stats.Record(dashboard.RequestStat{
+				Timestamp: time.Now(),
+				Path:      r.URL.Path,
+				Method:    r.Method,
+				Status:    rw.status,
+				Duration:  duration,
+			})
+		}
+
+		if eventBus != nil {
+			eventBus.Emit(Event{
+				Type:       eventTypeFromStatus(rw.status, r.URL.Path),
+				Path:       r.URL.Path,
+				Method:     r.Method,
+				Status:     rw.status,
+				DurationMS: duration.Milliseconds(),
+				Timestamp:  time.Now(),
+				Details:    eventDetailsFromHeaders(rw, r),
+			})
+		}
 	})
 }
 
@@ -242,3 +438,9 @@ func (rw *responseWriter) WriteHeader(code int) {
 	rw.ResponseWriter.WriteHeader(code)
 }
 
+// Flush implements http.Flusher for SSE support.
+func (rw *responseWriter) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}

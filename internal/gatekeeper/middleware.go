@@ -2,8 +2,10 @@ package gatekeeper
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -11,25 +13,30 @@ import (
 	"github.com/bsv-blockchain/go-sdk/transaction"
 
 	"github.com/merkle-works/x402-gateway/internal/challenge"
-	deleg "github.com/merkle-works/x402-gateway/internal/delegator"
 )
 
 const (
-	// ProofHeader is the HTTP header carrying the client's payment proof.
-	ProofHeader = "X-402-Proof"
+	// ChallengeHeader is the HTTP header carrying the 402 challenge (per spec).
+	ChallengeHeader = "X402-Challenge"
 
-	// ReceiptHeader is the HTTP header carrying the payment receipt.
-	ReceiptHeader = "X-402-Receipt"
+	// AcceptHeader signals supported payment schemes (per spec).
+	AcceptHeader = "X402-Accept"
 
-	// AuthenticateHeader is the standard WWW-Authenticate header.
-	AuthenticateHeader = "WWW-Authenticate"
+	// ProofHeader is the HTTP header carrying the client's payment proof (per spec).
+	ProofHeader = "X402-Proof"
+
+	// ReceiptHeader is the HTTP header carrying the payment receipt (per spec).
+	ReceiptHeader = "X402-Receipt"
 )
 
 // Middleware returns an http.Handler middleware that gates access behind x402 payment.
 //
-// Flow:
-//  1. If no X-402-Proof header → lease nonce, build challenge, return 402
-//  2. If X-402-Proof present → parse proof, validate, delegate, pass through on success
+// Flow (per 04-Protocol-Spec.md):
+//  1. If no X402-Proof header → lease nonce, build challenge, return 402
+//  2. If X402-Proof present → parse proof, verify tx structure, verify binding, gate response
+//
+// The gatekeeper is VERIFY-ONLY. It does not call the delegator.
+// The client calls the delegator directly (step 4 in spec) before sending the proof.
 func Middleware(cfg Config) func(http.Handler) http.Handler {
 	logger := slog.Default().With("component", "gatekeeper")
 
@@ -43,7 +50,7 @@ func Middleware(cfg Config) func(http.Handler) http.Handler {
 				return
 			}
 
-			// Proof present — validate and delegate
+			// Proof present — verify and gate
 			handleProof(w, r, next, proofHeader, cfg, logger)
 		})
 	}
@@ -55,39 +62,57 @@ func handleChallenge(w http.ResponseWriter, r *http.Request, cfg Config, logger 
 	amount, err := cfg.PricingFunc(r)
 	if err != nil {
 		logger.Error("pricing function failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "PRICING_ERROR", "failed to determine price")
+		writeError(w, http.StatusInternalServerError, string(ErrInternalError), "failed to determine price")
 		return
 	}
 
-	// Lease a nonce UTXO
+	// Lease a nonce UTXO from the nonce allocator
 	nonceUTXO, err := cfg.NoncePool.Lease()
 	if err != nil {
 		logger.Error("nonce lease failed", "error", err)
-		writeError(w, http.StatusServiceUnavailable, "NONCE_EXHAUSTED", "no nonces available")
+		writeError(w, HTTPStatusForError(ErrNoNoncesAvailable), string(ErrNoNoncesAvailable), "no nonces available")
 		return
 	}
 
-	// Build the challenge
+	// Build the challenge with flat fields per spec
+	bindHeaders := cfg.BindHeaders
+	if len(bindHeaders) == 0 {
+		bindHeaders = HeaderAllowlist
+	}
+
 	opts := challenge.BuildOptions{
-		PayeeAddress: cfg.PayeeAddress,
-		Amount:       amount,
-		Network:      cfg.Network,
-		TTL:          cfg.ChallengeTTL,
-		BindHeaders:  cfg.BindHeaders,
+		PayeeLockingScriptHex: cfg.PayeeLockingScriptHex,
+		Amount:                amount,
+		Network:               cfg.Network,
+		TTL:                   cfg.ChallengeTTL,
+		BindHeaders:           bindHeaders,
 	}
 
 	ch, err := challenge.Build(r, nonceUTXO, opts)
 	if err != nil {
 		logger.Error("challenge build failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "CHALLENGE_ERROR", "failed to build challenge")
+		writeError(w, http.StatusInternalServerError, string(ErrInternalError), "failed to build challenge")
 		return
+	}
+
+	// Compute challenge hash for storage key
+	challengeHash, err := challenge.ComputeHash(ch)
+	if err != nil {
+		logger.Error("challenge hash failed", "error", err)
+		writeError(w, http.StatusInternalServerError, string(ErrInternalError), "failed to compute challenge hash")
+		return
+	}
+
+	// Store challenge in cache for binding verification on proof submission
+	if cfg.ChallengeCache != nil {
+		cfg.ChallengeCache.Store(challengeHash, ch)
 	}
 
 	// Encode challenge for the header
 	encoded, err := challenge.Encode(ch)
 	if err != nil {
 		logger.Error("challenge encode failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "CHALLENGE_ERROR", "failed to encode challenge")
+		writeError(w, http.StatusInternalServerError, string(ErrInternalError), "failed to encode challenge")
 		return
 	}
 
@@ -95,89 +120,164 @@ func handleChallenge(w http.ResponseWriter, r *http.Request, cfg Config, logger 
 		"path", r.URL.Path,
 		"amount", amount,
 		"nonce", nonceUTXO.Outpoint(),
-		"challenge_hash", ch.ChallengeSHA256,
+		"challenge_hash", challengeHash,
 	)
 
-	// Return 402 with challenge
-	w.Header().Set(AuthenticateHeader, "X402 "+encoded)
+	// Return 402 with challenge per spec
+	w.Header().Set(ChallengeHeader, encoded)
+	w.Header().Set(AcceptHeader, challenge.Scheme)
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusPaymentRequired)
 	json.NewEncoder(w).Encode(map[string]any{
-		"status":    402,
-		"code":      "PAYMENT_REQUIRED",
-		"message":   "Payment required. See WWW-Authenticate header for challenge.",
-		"challenge": ch,
+		"status":  402,
+		"code":    "payment_required",
+		"message": "Payment required. See X402-Challenge header.",
 	})
 }
 
-// handleProof validates a payment proof and delegates the transaction.
+// handleProof verifies a payment proof and gates the response.
+// The gatekeeper is VERIFY-ONLY: it checks the tx structure, binding, and nonce spend.
+// It does NOT call the delegator — the client already did that.
 func handleProof(w http.ResponseWriter, r *http.Request, next http.Handler, proofHeader string, cfg Config, logger *slog.Logger) {
-	// Parse the proof
+	// Step 1: Parse the proof
 	proof, err := ParseProof(proofHeader)
 	if err != nil {
 		logger.Warn("invalid proof header", "error", err)
-		writeError(w, http.StatusBadRequest, "INVALID_PROOF", err.Error())
+		writeError(w, HTTPStatusForError(ErrInvalidProof), string(ErrInvalidProof), err.Error())
 		return
 	}
 
-	// Extract the nonce outpoint from the partial transaction using the SDK
-	nonceTxID, nonceVout, err := extractNonceOutpoint(proof.PartialTxHex)
+	// Step 2: Validate version and scheme
+	if proof.V != challenge.Version {
+		writeError(w, HTTPStatusForError(ErrInvalidVersion), string(ErrInvalidVersion),
+			fmt.Sprintf("got version %q, want %q", proof.V, challenge.Version))
+		return
+	}
+	if proof.Scheme != challenge.Scheme {
+		writeError(w, HTTPStatusForError(ErrInvalidScheme), string(ErrInvalidScheme),
+			fmt.Sprintf("got scheme %q, want %q", proof.Scheme, challenge.Scheme))
+		return
+	}
+
+	// Step 3: Decode the raw transaction from base64
+	rawTxBytes, err := base64.StdEncoding.DecodeString(proof.RawTxB64)
 	if err != nil {
-		logger.Warn("cannot extract nonce from partial tx", "error", err)
-		writeError(w, http.StatusBadRequest, "INVALID_PROOF", "cannot parse partial transaction")
+		writeError(w, HTTPStatusForError(ErrInvalidProof), string(ErrInvalidProof), "invalid rawtx_b64")
 		return
 	}
 
-	// Look up the nonce in our pool to get its metadata
+	tx, err := transaction.NewTransactionFromBytes(rawTxBytes)
+	if err != nil {
+		writeError(w, HTTPStatusForError(ErrInvalidProof), string(ErrInvalidProof), "cannot parse transaction")
+		return
+	}
+
+	// Step 10: Compute txid and compare to proof.txid
+	computedTxID := tx.TxID().String()
+	if proof.TxID != "" && proof.TxID != computedTxID {
+		writeError(w, HTTPStatusForError(ErrInvalidProof), string(ErrInvalidProof),
+			fmt.Sprintf("txid mismatch: proof=%s, computed=%s", proof.TxID, computedTxID))
+		return
+	}
+
+	// Step 11: Confirm tx includes input spending nonce_utxo
+	if tx.InputCount() < 1 {
+		writeError(w, HTTPStatusForError(ErrInvalidProof), string(ErrInvalidProof), "transaction has no inputs")
+		return
+	}
+	input0 := tx.Inputs[0]
+	nonceTxID := input0.SourceTXID.String()
+	nonceVout := input0.SourceTxOutIndex
+
+	// Verify nonce is from our pool
 	nonceUTXO := cfg.NoncePool.Lookup(nonceTxID, nonceVout)
 	if nonceUTXO == nil {
-		writeError(w, http.StatusPaymentRequired, "WRONG_NONCE", "nonce not from this gateway")
+		writeError(w, HTTPStatusForError(ErrInvalidNonce), string(ErrInvalidNonce), "nonce not from this gateway")
 		return
 	}
 
-	// Determine the expected price for this request
-	amount, err := cfg.PricingFunc(r)
-	if err != nil {
-		logger.Error("pricing function failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "PRICING_ERROR", "failed to determine price")
-		return
+	// Defence-in-depth: replay check at gatekeeper layer.
+	// Only reject if the nonce was spent by a DIFFERENT transaction (true double-spend).
+	// When the delegator is co-located, it records the nonce spend before the gatekeeper
+	// sees the proof — so the same txid appearing is the normal flow, not a replay.
+	if cfg.ReplayCache != nil {
+		if existingTxID, found := cfg.ReplayCache.Check(nonceTxID, nonceVout); found {
+			if existingTxID != computedTxID {
+				logger.Warn("replay detected at gatekeeper",
+					"nonce", fmt.Sprintf("%s:%d", nonceTxID, nonceVout),
+					"existing_txid", existingTxID,
+					"proof_txid", computedTxID,
+				)
+				writeError(w, HTTPStatusForError(ErrDoubleSpend), string(ErrDoubleSpend),
+					fmt.Sprintf("nonce already spent in tx %s", existingTxID))
+				return
+			}
+			// Same txid — delegator already processed this; allow through
+		}
 	}
 
-	// Build delegation request
-	delegReq := deleg.DelegationRequest{
-		PartialTxHex:   proof.PartialTxHex,
-		ChallengeHash:  proof.ChallengeHash,
-		ExpectedPayee:  cfg.PayeeAddress,
-		ExpectedAmount: amount,
-		NonceTxID:      nonceUTXO.TxID,
-		NonceVout:      nonceUTXO.Vout,
-		NonceScript:    nonceUTXO.Script,
-		NonceSatoshis:  nonceUTXO.Satoshis,
-	}
-
-	// Delegate the transaction
-	result, err := cfg.Delegator.Accept(delegReq)
-	if err != nil {
-		if delegErr, ok := err.(*deleg.DelegationError); ok {
-			logger.Warn("delegation rejected",
-				"code", delegErr.Code,
-				"message", delegErr.Message,
-			)
-			writeError(w, delegErr.Status, delegErr.Code, delegErr.Message)
+	// Steps 6-9: Look up original challenge for binding verification
+	if cfg.ChallengeCache != nil {
+		originalChallenge := cfg.ChallengeCache.Lookup(proof.ChallengeSHA256)
+		if originalChallenge == nil {
+			writeError(w, HTTPStatusForError(ErrChallengeNotFound), string(ErrChallengeNotFound),
+				"challenge not found or expired")
 			return
 		}
-		logger.Error("delegation failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "DELEGATION_ERROR", err.Error())
-		return
+
+		// Validate scheme and version on the challenge too
+		if err := challenge.ValidateSchemeVersion(originalChallenge); err != nil {
+			logger.Warn("challenge scheme/version mismatch", "error", err)
+			if originalChallenge.Scheme != challenge.Scheme {
+				writeError(w, HTTPStatusForError(ErrInvalidScheme), string(ErrInvalidScheme), err.Error())
+			} else {
+				writeError(w, HTTPStatusForError(ErrInvalidVersion), string(ErrInvalidVersion), err.Error())
+			}
+			return
+		}
+
+		// Step 9: Check challenge expiry
+		if originalChallenge.ExpiresAt <= time.Now().Unix() {
+			writeError(w, HTTPStatusForError(ErrExpiredChallenge), string(ErrExpiredChallenge),
+				"challenge has expired")
+			return
+		}
+
+		// Step 8: Verify request binding
+		bindHeaders := cfg.BindHeaders
+		if len(bindHeaders) == 0 {
+			bindHeaders = HeaderAllowlist
+		}
+		if err := challenge.VerifyBinding(originalChallenge, r, bindHeaders); err != nil {
+			logger.Warn("binding mismatch", "error", err)
+			writeError(w, HTTPStatusForError(ErrInvalidBinding), string(ErrInvalidBinding), err.Error())
+			return
+		}
+
+		// Step 12: Confirm tx has output paying ≥ amount_sats to payee
+		if err := verifyPayeeOutput(tx, originalChallenge.PayeeLockingScriptHex, originalChallenge.AmountSats); err != nil {
+			logger.Warn("payee output verification failed", "error", err)
+			writeError(w, HTTPStatusForError(ErrInvalidPayee), string(ErrInvalidPayee), err.Error())
+			return
+		}
+
+		// Delete challenge from cache after successful verification (single-use)
+		cfg.ChallengeCache.Delete(proof.ChallengeSHA256)
+	}
+
+	// Mark nonce as spent and record in replay cache
+	cfg.NoncePool.MarkSpent(nonceTxID, nonceVout)
+	if cfg.ReplayCache != nil {
+		cfg.ReplayCache.Record(nonceTxID, nonceVout, computedTxID)
 	}
 
 	// Success — add receipt header and pass through to the protected handler
-	receiptHash := computeReceiptHash(result.TxID, proof.ChallengeHash)
+	receiptHash := computeReceiptHash(computedTxID, proof.ChallengeSHA256)
 	w.Header().Set(ReceiptHeader, receiptHash)
-	w.Header().Set("X-402-TxID", result.TxID)
 
 	logger.Info("payment accepted",
-		"txid", result.TxID,
+		"txid", computedTxID,
 		"path", r.URL.Path,
 		"receipt", receiptHash,
 	)
@@ -185,23 +285,17 @@ func handleProof(w http.ResponseWriter, r *http.Request, next http.Handler, proo
 	next.ServeHTTP(w, r)
 }
 
-// extractNonceOutpoint parses a partial transaction hex and returns the first input's outpoint.
-// Uses the go-sdk transaction parser.
-func extractNonceOutpoint(txHex string) (string, uint32, error) {
-	tx, err := transaction.NewTransactionFromHex(txHex)
-	if err != nil {
-		return "", 0, err
-	}
-	if tx.InputCount() < 1 {
-		return "", 0, &deleg.DelegationError{
-			Code:    "INVALID_TRANSACTION",
-			Message: "partial tx has no inputs",
-			Status:  402,
+// verifyPayeeOutput checks that the transaction has at least one output
+// paying ≥ minAmount to the expected payee locking script.
+func verifyPayeeOutput(tx *transaction.Transaction, expectedScriptHex string, minAmount int64) error {
+	for i, out := range tx.Outputs {
+		scriptHex := hex.EncodeToString(*out.LockingScript)
+		if scriptHex == expectedScriptHex && int64(out.Satoshis) >= minAmount {
+			return nil // found valid payee output
 		}
+		_ = i
 	}
-	input0 := tx.Inputs[0]
-	txid := hex.EncodeToString(input0.SourceTXID[:])
-	return txid, input0.SourceTxOutIndex, nil
+	return fmt.Errorf("no output paying ≥ %d sats to expected payee", minAmount)
 }
 
 func computeReceiptHash(txid, challengeHash string) string {

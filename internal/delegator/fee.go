@@ -4,7 +4,9 @@ import "github.com/bsv-blockchain/go-sdk/transaction"
 
 // CalculateFee estimates the mining fee needed for a transaction.
 // It uses the current number of inputs/outputs to estimate size.
-// feeRate is in satoshis per byte (default: 1.0).
+// feeRate is in satoshis per byte.
+// BSV standard: 1 sat/KB = 0.001 sat/byte.
+// A typical x402 tx (~400 bytes) costs ~1 sat at the standard rate.
 func CalculateFee(tx *transaction.Transaction, additionalInputs int, feeRate float64) uint64 {
 	// Base transaction overhead: version(4) + nInputVarInt(1) + nOutputVarInt(1) + locktime(4) = 10 bytes
 	baseSize := 10

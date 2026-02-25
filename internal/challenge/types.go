@@ -1,32 +1,32 @@
 package challenge
 
-// Challenge is the 402 payment challenge returned to the client.
+// Challenge is the 402 payment challenge sent to the client.
+// Field names and structure match 04-Protocol-Spec.md (FROZEN).
 type Challenge struct {
-	Scheme          string         `json:"scheme"`           // "bsv-tx-v1+delegated"
-	Network         string         `json:"network"`          // "mainnet" or "testnet"
-	Version         string         `json:"version"`          // "0.1"
-	Nonce           NonceRef       `json:"nonce"`            // the leased nonce UTXO
-	Payee           string         `json:"payee"`            // service BSV address
-	Amount          uint64         `json:"amount"`           // price in satoshis
-	Expiry          int64          `json:"expiry"`           // unix timestamp
-	RequestBinding  RequestBinding `json:"request_binding"`  // canonical request hash
-	ChallengeSHA256 string         `json:"challenge_sha256"` // SHA-256 of this challenge
+	V                     string   `json:"v"`                        // "1"
+	Scheme                string   `json:"scheme"`                   // "bsv-tx-v1"
+	NonceUTXO             NonceRef `json:"nonce_utxo"`               // nonce UTXO that client must spend
+	AmountSats            int64    `json:"amount_sats"`              // price in satoshis
+	PayeeLockingScriptHex string   `json:"payee_locking_script_hex"` // hex-encoded locking script
+	ExpiresAt             int64    `json:"expires_at"`               // unix timestamp (seconds)
+
+	// Request binding fields (flat, per spec)
+	Domain           string `json:"domain"`             // host header
+	Method           string `json:"method"`             // HTTP method
+	Path             string `json:"path"`               // request path
+	Query            string `json:"query"`              // raw query string (empty string if none)
+	ReqHeadersSHA256 string `json:"req_headers_sha256"` // SHA-256 of canonical headers
+	ReqBodySHA256    string `json:"req_body_sha256"`    // SHA-256 of body bytes
+
+	// Settlement parameters (spec-defined)
+	RequireMempoolAccept  bool `json:"require_mempool_accept"`  // true = 0-conf gating
+	ConfirmationsRequired int  `json:"confirmations_required"`  // 0 for instant
 }
 
 // NonceRef identifies the nonce UTXO that the client must spend in the partial tx.
 type NonceRef struct {
-	TxID     string `json:"txid"`
-	Vout     uint32 `json:"vout"`
-	Script   string `json:"script"`   // hex-encoded locking script
-	Satoshis uint64 `json:"satoshis"` // always 1
-}
-
-// RequestBinding binds the challenge to the specific HTTP request.
-type RequestBinding struct {
-	Method      string `json:"method"`
-	Path        string `json:"path"`
-	QueryHash   string `json:"query_hash"`   // SHA-256 of sorted query params
-	BodyHash    string `json:"body_hash"`    // SHA-256 of body
-	HeadersHash string `json:"headers_hash"` // SHA-256 of selected headers
-	Domain      string `json:"domain"`
+	TxID             string `json:"txid"`
+	Vout             uint32 `json:"vout"`
+	Satoshis         int64  `json:"satoshis"`
+	LockingScriptHex string `json:"locking_script_hex"` // hex-encoded locking script
 }
