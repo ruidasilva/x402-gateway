@@ -19,6 +19,7 @@ export interface ConfigResponse {
   leaseTTLSeconds: number
   payeeAddress: string
   keyMode: string // "xpriv" or "wif"
+  nonceAddress: string
   feeAddress: string
   paymentAddress: string
   treasuryAddress: string
@@ -33,6 +34,7 @@ export interface StatsSummary {
   avgDurationMs: number
   totalFeeSats: number
   uptimeSeconds: number
+  noncePool: PoolStats
   feePool: PoolStats
   paymentPool: PoolStats
 }
@@ -51,6 +53,7 @@ export interface TreasuryInfo {
   network: string
   keyMode: string
   derivationPath: string
+  noncePool: PoolStats
   feePool: PoolStats
   paymentPool: PoolStats
 }

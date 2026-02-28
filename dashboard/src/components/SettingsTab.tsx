@@ -102,6 +102,7 @@ export default function SettingsTab() {
         </div>
         {[
           { label: 'Payee', addr: config.payeeAddress },
+          { label: 'Nonce Pool', addr: config.nonceAddress },
           { label: 'Payment Pool', addr: config.paymentAddress },
           { label: 'Fee Pool', addr: config.feeAddress },
           { label: 'Treasury', addr: config.treasuryAddress },

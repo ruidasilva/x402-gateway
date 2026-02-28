@@ -18,6 +18,7 @@ type ConfigResponse struct {
 	LeaseTTL               int     `json:"leaseTTLSeconds"`
 	PayeeAddress           string  `json:"payeeAddress"`
 	KeyMode                string  `json:"keyMode"` // "xpriv" or "wif"
+	NonceAddress           string  `json:"nonceAddress"`
 	FeeAddress             string  `json:"feeAddress"`
 	PaymentAddress         string  `json:"paymentAddress"`
 	TreasuryAddress        string  `json:"treasuryAddress"`
@@ -50,6 +51,7 @@ func (d *DashboardAPI) handleGetConfig() http.HandlerFunc {
 			LeaseTTL:               int(d.cfg.LeaseTTL.Seconds()),
 			PayeeAddress:           d.payeeAddr,
 			KeyMode:                keyMode,
+			NonceAddress:           d.keys.NonceAddress,
 			FeeAddress:             d.keys.FeeAddress,
 			PaymentAddress:         d.keys.PaymentAddress,
 			TreasuryAddress:        d.keys.TreasuryAddress,

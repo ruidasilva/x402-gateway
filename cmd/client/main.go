@@ -112,6 +112,9 @@ func main() {
 	fmt.Printf("    Payee:    %s\n", truncate(ch.PayeeLockingScriptHex, 40))
 	fmt.Printf("    Amount:   %d sats\n", ch.AmountSats)
 	fmt.Printf("    Hash:     %s\n", truncate(challengeHash, 24))
+	if ch.NonceUTXO != nil {
+		fmt.Printf("    Nonce:    %s:%d\n", truncate(ch.NonceUTXO.TxID, 16), ch.NonceUTXO.Vout)
+	}
 
 	// ──────────────────────────────────────────────────────────
 	// Step 3: Send challenge to delegator (full tx delegation)
@@ -122,6 +125,9 @@ func main() {
 		"challenge_hash":           challengeHash,
 		"payee_locking_script_hex": ch.PayeeLockingScriptHex,
 		"amount_sats":              ch.AmountSats,
+	}
+	if ch.NonceUTXO != nil {
+		delegReq["nonce_utxo"] = ch.NonceUTXO
 	}
 	delegBody, _ := json.Marshal(delegReq)
 

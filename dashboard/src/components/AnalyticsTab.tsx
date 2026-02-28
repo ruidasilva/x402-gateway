@@ -112,7 +112,23 @@ export default function AnalyticsTab() {
 
       {/* Pool utilization */}
       {stats && (
-        <div className="grid grid-2">
+        <div className="grid grid-3">
+          <div className="card">
+            <div className="card-header">
+              <span className="card-title">Nonce Pool Utilization</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+              <span className="stat-value">
+                {stats.noncePool.total > 0
+                  ? `${((stats.noncePool.available / stats.noncePool.total) * 100).toFixed(0)}%`
+                  : '0%'}
+              </span>
+              <span className="stat-label">available</span>
+            </div>
+            <div style={{ marginTop: 8, fontSize: 13, color: 'var(--text-muted)' }}>
+              {stats.noncePool.available} / {stats.noncePool.total} UTXOs
+            </div>
+          </div>
           <div className="card">
             <div className="card-header">
               <span className="card-title">Payment Pool Utilization</span>

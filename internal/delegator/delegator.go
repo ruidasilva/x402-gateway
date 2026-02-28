@@ -25,9 +25,11 @@ type Delegator struct {
 	key         *ec.PrivateKey
 	address     *script.Address
 	mainnet     bool
-	feePool     pool.Pool     // pool for fee UTXOs (1-sat each)
-	paymentPool pool.Pool     // pool for payment UTXOs (100-sat each)
-	paymentKey  *ec.PrivateKey // key for signing payment inputs
+	feePool     pool.Pool          // pool for fee UTXOs (1-sat each)
+	paymentPool pool.Pool          // pool for payment UTXOs (100-sat each)
+	paymentKey  *ec.PrivateKey     // key for signing payment inputs
+	noncePool   pool.Pool          // pool for nonce UTXOs (1-sat each, replay protection)
+	nonceKey    *ec.PrivateKey     // key for signing nonce inputs
 	broadcaster transaction.Broadcaster
 	replayCache *replay.Cache
 	feeRate     float64
@@ -42,6 +44,8 @@ func New(
 	feePool pool.Pool,
 	paymentPool pool.Pool,
 	paymentKey *ec.PrivateKey,
+	noncePool pool.Pool,
+	nonceKey *ec.PrivateKey,
 	broadcaster transaction.Broadcaster,
 	replayCache *replay.Cache,
 	feeRate float64,
@@ -59,6 +63,8 @@ func New(
 		feePool:     feePool,
 		paymentPool: paymentPool,
 		paymentKey:  paymentKey,
+		noncePool:   noncePool,
+		nonceKey:    nonceKey,
 		broadcaster: broadcaster,
 		replayCache: replayCache,
 		feeRate:     feeRate,
@@ -74,15 +80,24 @@ func (d *Delegator) Accept(req DelegationRequest) (*DelegationResult, error) {
 		"amount", req.ExpectedAmount,
 	)
 
-	// 1. Check replay cache — has this challenge already been settled?
-	if existingTxID, found := d.replayCache.Check(req.ChallengeHash); found {
+	// Validate nonce UTXO is provided
+	if req.NonceUTXO == nil {
+		return nil, &DelegationError{
+			Code:    ErrInvalidProof.Code,
+			Message: "nonce_utxo is required for replay protection",
+			Status:  ErrInvalidProof.Status,
+		}
+	}
+
+	// 1. Check replay cache — has this nonce outpoint already been spent?
+	if existingTxID, _, found := d.replayCache.Check(req.NonceUTXO.TxID, req.NonceUTXO.Vout); found {
 		d.logger.Warn("replay detected",
-			"challenge_hash", req.ChallengeHash,
+			"nonce", fmt.Sprintf("%s:%d", req.NonceUTXO.TxID, req.NonceUTXO.Vout),
 			"existing_txid", existingTxID,
 		)
 		return nil, &DelegationError{
 			Code:    ErrDoubleSpend.Code,
-			Message: fmt.Sprintf("challenge already settled in tx %s", existingTxID),
+			Message: fmt.Sprintf("nonce already spent in tx %s", existingTxID),
 			Status:  ErrDoubleSpend.Status,
 		}
 	}
@@ -90,7 +105,24 @@ func (d *Delegator) Accept(req DelegationRequest) (*DelegationResult, error) {
 	// 2. Build the full transaction
 	tx := transaction.NewTransaction()
 
-	// Input 0: payment UTXO (provides funds for the payee output)
+	// Input 0: nonce UTXO (replay protection — must be spent)
+	nonceUnlocker, err := p2pkh.Unlock(d.nonceKey, &stdSigHash)
+	if err != nil {
+		return nil, fmt.Errorf("create nonce unlocker: %w", err)
+	}
+
+	err = tx.AddInputFrom(
+		req.NonceUTXO.TxID,
+		req.NonceUTXO.Vout,
+		req.NonceUTXO.LockingScriptHex,
+		req.NonceUTXO.Satoshis,
+		nonceUnlocker,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("add nonce input: %w", err)
+	}
+
+	// Input 1: payment UTXO (provides funds for the payee output)
 	paymentUTXO, err := d.paymentPool.Lease()
 	if err != nil {
 		return nil, &DelegationError{
@@ -125,7 +157,8 @@ func (d *Delegator) Accept(req DelegationRequest) (*DelegationResult, error) {
 		LockingScript: &payeeScript,
 	})
 
-	// Input 1+: fee UTXO(s) (provides miner fee)
+	// Input 2: fee UTXO(s) (provides miner fee)
+	// Account for 1 additional input (fee) beyond the nonce + payment already on the tx
 	feeNeeded := CalculateFee(tx, 1, d.feeRate)
 
 	feeUTXO, err := d.feePool.Lease()
@@ -148,7 +181,7 @@ func (d *Delegator) Accept(req DelegationRequest) (*DelegationResult, error) {
 	}
 
 	// Calculate total inputs and add change if needed
-	totalInputs := paymentUTXO.Satoshis + feeUTXO.Satoshis
+	totalInputs := req.NonceUTXO.Satoshis + paymentUTXO.Satoshis + feeUTXO.Satoshis
 	totalOutputs := uint64(req.ExpectedAmount)
 	remainder := totalInputs - totalOutputs
 
@@ -184,13 +217,15 @@ func (d *Delegator) Accept(req DelegationRequest) (*DelegationResult, error) {
 	}
 
 	// Mark UTXOs as spent and record in replay cache
+	d.noncePool.MarkSpent(req.NonceUTXO.TxID, req.NonceUTXO.Vout)
 	d.paymentPool.MarkSpent(paymentUTXO.TxID, paymentUTXO.Vout)
 	d.feePool.MarkSpent(feeUTXO.TxID, feeUTXO.Vout)
-	d.replayCache.Record(req.ChallengeHash, txid)
+	d.replayCache.Record(req.NonceUTXO.TxID, req.NonceUTXO.Vout, txid, req.ChallengeHash)
 
 	d.logger.Info("delegation accepted",
 		"txid", txid,
 		"challenge_hash", req.ChallengeHash,
+		"nonce", fmt.Sprintf("%s:%d", req.NonceUTXO.TxID, req.NonceUTXO.Vout),
 		"payment_sats", paymentUTXO.Satoshis,
 		"fee_sats", feeUTXO.Satoshis,
 		"fee_needed", feeNeeded,

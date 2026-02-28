@@ -105,6 +105,12 @@ func TestCanonicalJSON_GoldenHash(t *testing.T) {
 		"req_body_sha256":          "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 		"require_mempool_accept":   true,
 		"confirmations_required":   float64(0),
+		"nonce_utxo": map[string]any{
+			"txid":               "deadbeef" + "00000000000000000000000000000000000000000000000000000000",
+			"vout":               float64(0),
+			"satoshis":           float64(1),
+			"locking_script_hex": "76a914aabbccdd88ac",
+		},
 	}
 
 	canonical, err := CanonicalJSON(ch)
@@ -150,6 +156,12 @@ func TestCanonicalJSON_ChallengeStruct(t *testing.T) {
 		ReqBodySHA256:         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 		RequireMempoolAccept:  true,
 		ConfirmationsRequired: 0,
+		NonceUTXO: &NonceRef{
+			TxID:             "deadbeef" + "00000000000000000000000000000000000000000000000000000000",
+			Vout:             0,
+			Satoshis:         1,
+			LockingScriptHex: "76a914aabbccdd88ac",
+		},
 	}
 
 	result, err := CanonicalJSON(ch)

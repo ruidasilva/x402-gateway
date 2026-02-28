@@ -26,6 +26,7 @@ type StatsSummary struct {
 	AvgDurationMS   float64 `json:"avgDurationMs"`
 	TotalFeeSats    uint64  `json:"totalFeeSats"`
 	UptimeSeconds   float64 `json:"uptimeSeconds"`
+	NoncePool       any     `json:"noncePool"`
 	FeePool         any     `json:"feePool"`
 	PaymentPool     any     `json:"paymentPool"`
 }
@@ -152,6 +153,7 @@ func (d *DashboardAPI) handleStatsSummary() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		summary := d.stats.Summary(time.Hour)
 		summary.UptimeSeconds = time.Since(d.startTime).Seconds()
+		summary.NoncePool = d.noncePool.Stats()
 		summary.FeePool = d.feePool.Stats()
 		summary.PaymentPool = d.paymentPool.Stats()
 

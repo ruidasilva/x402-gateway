@@ -61,6 +61,7 @@ func main() {
 			os.Exit(1)
 		}
 		logger.Info("HD wallet mode (xPriv)",
+			"nonce_address", keys.NonceAddress,
 			"fee_address", keys.FeeAddress,
 			"payment_address", keys.PaymentAddress,
 			"treasury_address", keys.TreasuryAddress,
@@ -92,10 +93,11 @@ func main() {
 	}
 
 	// Create UTXO pools — either Redis-backed (production) or in-memory (demo)
-	// Two pools:
+	// Three pools:
+	//   - Nonce pool: 1-sat UTXOs for replay protection (each challenge binds to one)
 	//   - Fee pool: 1-sat UTXOs for miner fees
 	//   - Payment pool: 100-sat UTXOs for service payments
-	var feePool, paymentPool pool.Pool
+	var noncePool, feePool, paymentPool pool.Pool
 	var rdb *redis.Client // hoisted for use by treasury watcher
 	if cfg.RedisEnabled {
 		// Redis-backed pools — persistent across restarts
@@ -113,6 +115,13 @@ func main() {
 		}
 		logger.Info("connected to Redis", "url", cfg.RedisURL)
 
+		np, err := pool.NewRedisPool(rdb, "nonce:", keys.NonceKey, mainnet, cfg.LeaseTTL)
+		if err != nil {
+			logger.Error("failed to create nonce pool", "error", err)
+			os.Exit(1)
+		}
+		noncePool = np
+
 		fp, err := pool.NewRedisPool(rdb, "fee:", keys.FeeKey, mainnet, cfg.LeaseTTL)
 		if err != nil {
 			logger.Error("failed to create fee pool", "error", err)
@@ -128,6 +137,13 @@ func main() {
 		paymentPool = pp
 	} else {
 		// In-memory pools — for demo mode and testing
+		np, err := pool.NewMemoryPool(keys.NonceKey, mainnet, cfg.LeaseTTL, bcast)
+		if err != nil {
+			logger.Error("failed to create nonce pool", "error", err)
+			os.Exit(1)
+		}
+		noncePool = np
+
 		fp, err := pool.NewMemoryPool(keys.FeeKey, mainnet, cfg.LeaseTTL, bcast)
 		if err != nil {
 			logger.Error("failed to create fee pool", "error", err)
@@ -145,7 +161,7 @@ func main() {
 
 	// Demo mode — auto-seed pools with synthetic UTXOs when using MockBroadcaster.
 	if demoMode {
-		seedDemoPools(feePool, paymentPool, cfg.PoolSize, cfg.FeeRate, logger)
+		seedDemoPools(noncePool, feePool, paymentPool, cfg.PoolSize, cfg.FeeRate, logger)
 	}
 
 	// Create Treasury UTXO watcher (polls WoC for unspent UTXOs)
@@ -176,8 +192,8 @@ func main() {
 	replayCache := replay.New(10*time.Minute, 10000)
 
 	// Create delegator (the foundational settlement primitive)
-	// Two pools: fee (miner fees), payment (service payment)
-	deleg, err := delegator.New(key, mainnet, feePool, paymentPool, keys.PaymentKey, bcast, replayCache, cfg.FeeRate, true)
+	// Three pools: nonce (replay protection), fee (miner fees), payment (service payment)
+	deleg, err := delegator.New(key, mainnet, feePool, paymentPool, keys.PaymentKey, noncePool, keys.NonceKey, bcast, replayCache, cfg.FeeRate, true)
 	if err != nil {
 		logger.Error("failed to create delegator", "error", err)
 		os.Exit(1)
@@ -212,7 +228,7 @@ func main() {
 
 	// Create dashboard API (React dashboard backend)
 	dashAPI := dashboard.NewDashboardAPI(
-		cfg, keys, feePool, paymentPool,
+		cfg, keys, noncePool, feePool, paymentPool,
 		keys.TreasuryKey, mainnet, bcast,
 		startTime, payeeAddr,
 		watcher,
@@ -220,6 +236,7 @@ func main() {
 
 	// Start pool lease reclaim loops
 	stop := make(chan struct{})
+	noncePool.StartReclaimLoop(30*time.Second, stop)
 	feePool.StartReclaimLoop(30*time.Second, stop)
 	paymentPool.StartReclaimLoop(30*time.Second, stop)
 
@@ -240,6 +257,7 @@ func main() {
 			"status":       "ok",
 			"version":      "1.0.0",
 			"network":      cfg.BSVNetwork,
+			"nonce_pool":   noncePool.Stats(),
 			"fee_pool":     feePool.Stats(),
 			"payment_pool": paymentPool.Stats(),
 		})
@@ -283,6 +301,7 @@ func main() {
 	// --- Protected endpoint (gated by x402 middleware) ---
 
 	gatekeeperCfg := gatekeeper.Config{
+		NoncePool:             noncePool,
 		ReplayCache:           replayCache,
 		ChallengeCache:        challengeCache,
 		PayeeLockingScriptHex: payeeLockingScriptHex,
@@ -319,7 +338,7 @@ func main() {
 	// --- Demo/Testing endpoints ---
 	mux.HandleFunc("POST /demo/build-proof", handleBuildProof(key, mainnet, deleg, payeeLockingScriptHex))
 	mux.HandleFunc("GET /demo/events", handleEvents(eventBus)) // backward compat
-	mux.HandleFunc("GET /demo/info", handleDemoInfo(cfg, feePool, paymentPool, payeeAddr))
+	mux.HandleFunc("GET /demo/info", handleDemoInfo(cfg, noncePool, feePool, paymentPool, payeeAddr))
 
 	// --- React Dashboard SPA ---
 	mux.HandleFunc("GET /", handleDashboardSPA())
@@ -348,6 +367,7 @@ func main() {
 	fmt.Printf("  Network:    %s\n", cfg.BSVNetwork)
 	if cfg.XPRIV != "" {
 		fmt.Printf("  Key mode:   HD wallet (xPriv)\n")
+		fmt.Printf("  Nonce:      %s\n", keys.NonceAddress)
 		fmt.Printf("  Fee addr:   %s\n", keys.FeeAddress)
 		fmt.Printf("  Payment:    %s\n", keys.PaymentAddress)
 		fmt.Printf("  Treasury:   %s\n", keys.TreasuryAddress)

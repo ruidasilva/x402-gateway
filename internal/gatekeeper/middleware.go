@@ -63,6 +63,24 @@ func handleChallenge(w http.ResponseWriter, r *http.Request, cfg Config, logger 
 		return
 	}
 
+	// Lease a nonce UTXO for replay protection
+	var nonceRef *challenge.NonceRef
+	if cfg.NoncePool != nil {
+		nonceUTXO, err := cfg.NoncePool.Lease()
+		if err != nil {
+			logger.Error("no nonce UTXOs available", "error", err)
+			writeError(w, HTTPStatusForError(ErrNoUTXOsAvailable), string(ErrNoUTXOsAvailable),
+				"no nonce UTXOs available for challenge")
+			return
+		}
+		nonceRef = &challenge.NonceRef{
+			TxID:             nonceUTXO.TxID,
+			Vout:             nonceUTXO.Vout,
+			Satoshis:         nonceUTXO.Satoshis,
+			LockingScriptHex: nonceUTXO.Script,
+		}
+	}
+
 	// Build the challenge
 	bindHeaders := cfg.BindHeaders
 	if len(bindHeaders) == 0 {
@@ -75,6 +93,7 @@ func handleChallenge(w http.ResponseWriter, r *http.Request, cfg Config, logger 
 		Network:               cfg.Network,
 		TTL:                   cfg.ChallengeTTL,
 		BindHeaders:           bindHeaders,
+		NonceUTXO:             nonceRef,
 	}
 
 	ch, err := challenge.Build(r, opts)
@@ -109,6 +128,7 @@ func handleChallenge(w http.ResponseWriter, r *http.Request, cfg Config, logger 
 		"path", r.URL.Path,
 		"amount", amount,
 		"challenge_hash", challengeHash,
+		"nonce", nonceRefString(nonceRef),
 	)
 
 	// Return 402 with challenge per spec
@@ -173,75 +193,100 @@ func handleProof(w http.ResponseWriter, r *http.Request, next http.Handler, proo
 		return
 	}
 
-	// Step 6: Replay check — keyed on challenge hash
-	if cfg.ReplayCache != nil {
-		if existingTxID, found := cfg.ReplayCache.Check(proof.ChallengeSHA256); found {
-			if existingTxID != computedTxID {
-				logger.Warn("replay detected at gatekeeper",
-					"challenge_hash", proof.ChallengeSHA256,
-					"existing_txid", existingTxID,
-					"proof_txid", computedTxID,
+	// Step 6: Look up original challenge (needed for nonce outpoint + binding verification)
+	var originalChallenge *challenge.Challenge
+	if cfg.ChallengeCache != nil {
+		originalChallenge = cfg.ChallengeCache.Lookup(proof.ChallengeSHA256)
+	}
+
+	// Step 7: Replay check using nonce outpoint from the challenge
+	if cfg.ReplayCache != nil && originalChallenge != nil && originalChallenge.NonceUTXO != nil {
+		nonce := originalChallenge.NonceUTXO
+		if existingTxID, _, found := cfg.ReplayCache.Check(nonce.TxID, nonce.Vout); found {
+			if existingTxID == computedTxID {
+				// Same tx — idempotent re-serve (the nonce was already spent by this tx)
+				logger.Info("idempotent re-serve",
+					"txid", computedTxID,
+					"nonce", fmt.Sprintf("%s:%d", nonce.TxID, nonce.Vout),
 				)
-				writeError(w, HTTPStatusForError(ErrDoubleSpend), string(ErrDoubleSpend),
-					fmt.Sprintf("challenge already settled in tx %s", existingTxID))
+				receiptHash := computeReceiptHash(computedTxID, proof.ChallengeSHA256)
+				w.Header().Set(ReceiptHeader, receiptHash)
+				next.ServeHTTP(w, r)
 				return
 			}
-			// Same txid — delegator already processed this; allow through
+			// Different txid — nonce already consumed by another tx (double-spend attempt)
+			logger.Warn("replay detected at gatekeeper",
+				"nonce", fmt.Sprintf("%s:%d", nonce.TxID, nonce.Vout),
+				"existing_txid", existingTxID,
+				"proof_txid", computedTxID,
+			)
+			writeError(w, HTTPStatusForError(ErrDoubleSpend), string(ErrDoubleSpend),
+				fmt.Sprintf("nonce already spent in tx %s", existingTxID))
+			return
 		}
 	}
 
-	// Step 7: Look up original challenge for binding verification
+	// Step 8: If no original challenge found (expired or unknown), reject
+	if originalChallenge == nil {
+		writeError(w, HTTPStatusForError(ErrChallengeNotFound), string(ErrChallengeNotFound),
+			"challenge not found or expired")
+		return
+	}
+
+	// Step 9: Validate scheme and version on the challenge
+	if err := challenge.ValidateSchemeVersion(originalChallenge); err != nil {
+		logger.Warn("challenge scheme/version mismatch", "error", err)
+		if originalChallenge.Scheme != challenge.Scheme {
+			writeError(w, HTTPStatusForError(ErrInvalidScheme), string(ErrInvalidScheme), err.Error())
+		} else {
+			writeError(w, HTTPStatusForError(ErrInvalidVersion), string(ErrInvalidVersion), err.Error())
+		}
+		return
+	}
+
+	// Step 10: Check challenge expiry
+	if originalChallenge.ExpiresAt <= time.Now().Unix() {
+		writeError(w, HTTPStatusForError(ErrExpiredChallenge), string(ErrExpiredChallenge),
+			"challenge has expired")
+		return
+	}
+
+	// Step 11: Verify nonce spend — the tx MUST consume the nonce outpoint
+	if originalChallenge.NonceUTXO != nil {
+		if err := verifyNonceSpend(tx, originalChallenge.NonceUTXO); err != nil {
+			logger.Warn("nonce spend verification failed", "error", err)
+			writeError(w, HTTPStatusForError(ErrNonceMissing), string(ErrNonceMissing), err.Error())
+			return
+		}
+	}
+
+	// Step 12: Verify request binding
+	bindHeaders := cfg.BindHeaders
+	if len(bindHeaders) == 0 {
+		bindHeaders = HeaderAllowlist
+	}
+	if err := challenge.VerifyBinding(originalChallenge, r, bindHeaders); err != nil {
+		logger.Warn("binding mismatch", "error", err)
+		writeError(w, HTTPStatusForError(ErrInvalidBinding), string(ErrInvalidBinding), err.Error())
+		return
+	}
+
+	// Step 13: Confirm tx has output paying >= amount_sats to payee
+	if err := verifyPayeeOutput(tx, originalChallenge.PayeeLockingScriptHex, originalChallenge.AmountSats); err != nil {
+		logger.Warn("payee output verification failed", "error", err)
+		writeError(w, HTTPStatusForError(ErrInvalidPayee), string(ErrInvalidPayee), err.Error())
+		return
+	}
+
+	// Step 14: Delete challenge from cache after successful verification (single-use)
 	if cfg.ChallengeCache != nil {
-		originalChallenge := cfg.ChallengeCache.Lookup(proof.ChallengeSHA256)
-		if originalChallenge == nil {
-			writeError(w, HTTPStatusForError(ErrChallengeNotFound), string(ErrChallengeNotFound),
-				"challenge not found or expired")
-			return
-		}
-
-		// Validate scheme and version on the challenge too
-		if err := challenge.ValidateSchemeVersion(originalChallenge); err != nil {
-			logger.Warn("challenge scheme/version mismatch", "error", err)
-			if originalChallenge.Scheme != challenge.Scheme {
-				writeError(w, HTTPStatusForError(ErrInvalidScheme), string(ErrInvalidScheme), err.Error())
-			} else {
-				writeError(w, HTTPStatusForError(ErrInvalidVersion), string(ErrInvalidVersion), err.Error())
-			}
-			return
-		}
-
-		// Check challenge expiry
-		if originalChallenge.ExpiresAt <= time.Now().Unix() {
-			writeError(w, HTTPStatusForError(ErrExpiredChallenge), string(ErrExpiredChallenge),
-				"challenge has expired")
-			return
-		}
-
-		// Verify request binding
-		bindHeaders := cfg.BindHeaders
-		if len(bindHeaders) == 0 {
-			bindHeaders = HeaderAllowlist
-		}
-		if err := challenge.VerifyBinding(originalChallenge, r, bindHeaders); err != nil {
-			logger.Warn("binding mismatch", "error", err)
-			writeError(w, HTTPStatusForError(ErrInvalidBinding), string(ErrInvalidBinding), err.Error())
-			return
-		}
-
-		// Confirm tx has output paying >= amount_sats to payee
-		if err := verifyPayeeOutput(tx, originalChallenge.PayeeLockingScriptHex, originalChallenge.AmountSats); err != nil {
-			logger.Warn("payee output verification failed", "error", err)
-			writeError(w, HTTPStatusForError(ErrInvalidPayee), string(ErrInvalidPayee), err.Error())
-			return
-		}
-
-		// Delete challenge from cache after successful verification (single-use)
 		cfg.ChallengeCache.Delete(proof.ChallengeSHA256)
 	}
 
-	// Record in replay cache
-	if cfg.ReplayCache != nil {
-		cfg.ReplayCache.Record(proof.ChallengeSHA256, computedTxID)
+	// Step 15: Record in replay cache (nonce outpoint → txid + challenge hash)
+	if cfg.ReplayCache != nil && originalChallenge.NonceUTXO != nil {
+		nonce := originalChallenge.NonceUTXO
+		cfg.ReplayCache.Record(nonce.TxID, nonce.Vout, computedTxID, proof.ChallengeSHA256)
 	}
 
 	// Success — add receipt header and pass through to the protected handler
@@ -251,10 +296,28 @@ func handleProof(w http.ResponseWriter, r *http.Request, next http.Handler, proo
 	logger.Info("payment accepted",
 		"txid", computedTxID,
 		"path", r.URL.Path,
+		"nonce", nonceRefString(originalChallenge.NonceUTXO),
 		"receipt", receiptHash,
 	)
 
 	next.ServeHTTP(w, r)
+}
+
+// verifyNonceSpend checks that the transaction spends the nonce UTXO
+// specified in the challenge. This is the core replay protection mechanism:
+// Bitcoin consensus guarantees that an outpoint can only be spent once.
+func verifyNonceSpend(tx *transaction.Transaction, nonce *challenge.NonceRef) error {
+	if nonce == nil {
+		return fmt.Errorf("challenge has no nonce_utxo")
+	}
+	for _, input := range tx.Inputs {
+		if input.SourceTXID != nil &&
+			input.SourceTXID.String() == nonce.TxID &&
+			input.SourceTxOutIndex == nonce.Vout {
+			return nil // found the nonce input
+		}
+	}
+	return fmt.Errorf("transaction does not spend nonce outpoint %s:%d", nonce.TxID, nonce.Vout)
 }
 
 // verifyPayeeOutput checks that the transaction has at least one output
@@ -267,6 +330,13 @@ func verifyPayeeOutput(tx *transaction.Transaction, expectedScriptHex string, mi
 		}
 	}
 	return fmt.Errorf("no output paying >= %d sats to expected payee", minAmount)
+}
+
+func nonceRefString(n *challenge.NonceRef) string {
+	if n == nil {
+		return "<none>"
+	}
+	return fmt.Sprintf("%s:%d", n.TxID, n.Vout)
 }
 
 func computeReceiptHash(txid, challengeHash string) string {

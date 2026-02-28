@@ -1,12 +1,13 @@
 package replay
 
 import (
+	"fmt"
 	"sync"
 	"time"
 )
 
 // Cache provides LRU-evicting, TTL-based replay detection.
-// Key: challenge hash → Value: the txid that settled it.
+// Key: nonce outpoint (txid:vout) → Value: the txid that settled it + challenge hash.
 type Cache struct {
 	mu      sync.RWMutex
 	items   map[string]entry
@@ -16,8 +17,9 @@ type Cache struct {
 }
 
 type entry struct {
-	spendTxID string
-	createdAt time.Time
+	spendTxID     string
+	challengeHash string
+	createdAt     time.Time
 }
 
 // New creates a replay cache with the given TTL and max size.
@@ -30,27 +32,33 @@ func New(ttl time.Duration, maxSize int) *Cache {
 	}
 }
 
-// Check returns the spending txid if the challenge has already been settled.
-// Returns ("", false) if not found.
-func (c *Cache) Check(key string) (string, bool) {
+// outpointKey builds the cache key from a nonce outpoint.
+func outpointKey(txid string, vout uint32) string {
+	return fmt.Sprintf("%s:%d", txid, vout)
+}
+
+// Check returns the spending txid and challenge hash if the nonce outpoint
+// has already been settled. Returns ("", "", false) if not found or expired.
+func (c *Cache) Check(txid string, vout uint32) (spendTxID, challengeHash string, found bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
+	key := outpointKey(txid, vout)
 	e, ok := c.items[key]
 	if !ok {
-		return "", false
+		return "", "", false
 	}
 
 	// Check TTL
 	if time.Since(e.createdAt) > c.ttl {
-		return "", false
+		return "", "", false
 	}
 
-	return e.spendTxID, true
+	return e.spendTxID, e.challengeHash, true
 }
 
-// Record stores a challenge hash → spending txid mapping.
-func (c *Cache) Record(key string, spendTxID string) {
+// Record stores a nonce outpoint → spending txid + challenge hash mapping.
+func (c *Cache) Record(txid string, vout uint32, spendTxID, challengeHash string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -59,9 +67,11 @@ func (c *Cache) Record(key string, spendTxID string) {
 		c.evictOldest()
 	}
 
+	key := outpointKey(txid, vout)
 	c.items[key] = entry{
-		spendTxID: spendTxID,
-		createdAt: time.Now(),
+		spendTxID:     spendTxID,
+		challengeHash: challengeHash,
+		createdAt:     time.Now(),
 	}
 	c.order = append(c.order, key)
 }

@@ -1,5 +1,16 @@
 package challenge
 
+// NonceRef identifies a specific UTXO that the challenge is bound to.
+// The proof transaction MUST spend this outpoint as one of its inputs.
+// Bitcoin consensus guarantees single-spend, providing replay protection
+// without any server-side state.
+type NonceRef struct {
+	TxID             string `json:"txid"`               // 64-char hex txid of the nonce UTXO
+	Vout             uint32 `json:"vout"`                // output index
+	Satoshis         uint64 `json:"satoshis"`            // value (typically 1 sat)
+	LockingScriptHex string `json:"locking_script_hex"`  // hex P2PKH locking script
+}
+
 // Challenge is the 402 payment challenge sent to the client.
 type Challenge struct {
 	V                     string `json:"v"`                        // "1"
@@ -15,6 +26,10 @@ type Challenge struct {
 	Query            string `json:"query"`              // raw query string (empty string if none)
 	ReqHeadersSHA256 string `json:"req_headers_sha256"` // SHA-256 of canonical headers
 	ReqBodySHA256    string `json:"req_body_sha256"`    // SHA-256 of body bytes
+
+	// Nonce UTXO — binds this challenge to a specific UTXO for replay protection.
+	// The proof transaction MUST spend this outpoint as one of its inputs.
+	NonceUTXO *NonceRef `json:"nonce_utxo,omitempty"`
 
 	// Settlement parameters (spec-defined)
 	RequireMempoolAccept  bool `json:"require_mempool_accept"`  // true = 0-conf gating

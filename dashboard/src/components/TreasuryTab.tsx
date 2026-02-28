@@ -100,7 +100,8 @@ export default function TreasuryTab() {
       </div>
 
       {/* Pool status */}
-      <div className="grid grid-2">
+      <div className="grid grid-3">
+        {info.noncePool && <PoolStats label="Nonce" stats={info.noncePool} />}
         {info.feePool && <PoolStats label="Fee" stats={info.feePool} />}
         {info.paymentPool && <PoolStats label="Payment" stats={info.paymentPool} />}
       </div>
@@ -182,6 +183,7 @@ export default function TreasuryTab() {
           <div className="form-group">
             <label className="form-label">Target Pool</label>
             <select className="form-input" value={pool} onChange={(e) => setPool(e.target.value)}>
+              <option value="nonce">Nonce Pool (1 sat)</option>
               <option value="fee">Fee Pool (1 sat)</option>
               <option value="payment">Payment Pool (100 sat)</option>
             </select>

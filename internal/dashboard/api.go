@@ -17,6 +17,7 @@ import (
 type DashboardAPI struct {
 	cfg         *config.Config
 	keys        *hdwallet.DerivedKeys
+	noncePool   pool.Pool
 	feePool     pool.Pool
 	paymentPool pool.Pool
 	stats       *StatsCollector
@@ -32,7 +33,7 @@ type DashboardAPI struct {
 func NewDashboardAPI(
 	cfg *config.Config,
 	keys *hdwallet.DerivedKeys,
-	feePool, paymentPool pool.Pool,
+	noncePool, feePool, paymentPool pool.Pool,
 	treasuryKey *ec.PrivateKey,
 	mainnet bool,
 	bcast transaction.Broadcaster,
@@ -43,6 +44,7 @@ func NewDashboardAPI(
 	return &DashboardAPI{
 		cfg:         cfg,
 		keys:        keys,
+		noncePool:   noncePool,
 		feePool:     feePool,
 		paymentPool: paymentPool,
 		stats:       NewStatsCollector(3600, time.Minute), // 1 hour of 1-min buckets

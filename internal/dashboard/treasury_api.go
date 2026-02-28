@@ -17,13 +17,14 @@ type TreasuryInfoResponse struct {
 	Network        string `json:"network"`
 	KeyMode        string `json:"keyMode"` // "xpriv" or "wif"
 	DerivationPath string `json:"derivationPath,omitempty"`
+	NoncePool      any    `json:"noncePool"`
 	FeePool        any    `json:"feePool"`
 	PaymentPool    any    `json:"paymentPool"`
 }
 
 // FanoutRequest is the request body for POST /api/v1/treasury/fanout.
 type FanoutRequest struct {
-	Pool            string `json:"pool"`            // "fee" or "payment"
+	Pool            string `json:"pool"`            // "nonce", "fee", or "payment"
 	Count           int    `json:"count"`           // number of UTXOs to create
 	FundingTxID     string `json:"fundingTxid"`     // txid of funding UTXO
 	FundingVout     uint32 `json:"fundingVout"`     // vout of funding UTXO
@@ -139,6 +140,7 @@ func (d *DashboardAPI) handleTreasuryInfo() http.HandlerFunc {
 			Network:        d.cfg.BSVNetwork,
 			KeyMode:        keyMode,
 			DerivationPath: derivationPath,
+			NoncePool:      d.noncePool.Stats(),
 			FeePool:        d.feePool.Stats(),
 			PaymentPool:    d.paymentPool.Stats(),
 		}
@@ -159,9 +161,9 @@ func (d *DashboardAPI) handleTreasuryFanout() http.HandlerFunc {
 		}
 
 		// Validate pool selection
-		if req.Pool != "fee" && req.Pool != "payment" {
+		if req.Pool != "nonce" && req.Pool != "fee" && req.Pool != "payment" {
 			writeJSON(w, http.StatusBadRequest, map[string]any{
-				"error": "pool must be 'fee' or 'payment'",
+				"error": "pool must be 'nonce', 'fee', or 'payment'",
 			})
 			return
 		}
@@ -181,6 +183,8 @@ func (d *DashboardAPI) handleTreasuryFanout() http.HandlerFunc {
 		// Determine signing key (default: treasury)
 		signingKey := d.keys.TreasuryKey
 		switch req.SigningKey {
+		case "nonce":
+			signingKey = d.keys.NonceKey
 		case "fee":
 			signingKey = d.keys.FeeKey
 		case "payment":
@@ -189,15 +193,17 @@ func (d *DashboardAPI) handleTreasuryFanout() http.HandlerFunc {
 			signingKey = d.keys.TreasuryKey
 		default:
 			writeJSON(w, http.StatusBadRequest, map[string]any{
-				"error": "signingKey must be 'treasury', 'fee', or 'payment'",
+				"error": "signingKey must be 'treasury', 'nonce', 'fee', or 'payment'",
 			})
 			return
 		}
 
 		// Determine target address and output denomination for each pool
 		var targetAddr string
-		var outputSats uint64 = 1 // default for fee pool
+		var outputSats uint64 = 1 // default for nonce and fee pools
 		switch req.Pool {
+		case "nonce":
+			targetAddr = d.keys.NonceAddress
 		case "fee":
 			targetAddr = d.keys.FeeAddress
 		case "payment":
@@ -231,6 +237,8 @@ func (d *DashboardAPI) handleTreasuryFanout() http.HandlerFunc {
 		// Add new UTXOs to the appropriate pool
 		var targetPool pool.Pool
 		switch req.Pool {
+		case "nonce":
+			targetPool = d.noncePool
 		case "fee":
 			targetPool = d.feePool
 		case "payment":

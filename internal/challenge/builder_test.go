@@ -16,6 +16,12 @@ func TestBuildAndHash(t *testing.T) {
 		Network:               "testnet",
 		TTL:                   5 * time.Minute,
 		BindHeaders:           []string{"Content-Type"},
+		NonceUTXO: &NonceRef{
+			TxID:             "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+			Vout:             0,
+			Satoshis:         1,
+			LockingScriptHex: "76a914aabbccdd88ac",
+		},
 	}
 
 	ch, err := Build(req, opts)
@@ -44,6 +50,20 @@ func TestBuildAndHash(t *testing.T) {
 	}
 	if ch.ConfirmationsRequired != 0 {
 		t.Errorf("confirmations_required: got %d, want 0", ch.ConfirmationsRequired)
+	}
+
+	// Verify nonce UTXO is set
+	if ch.NonceUTXO == nil {
+		t.Fatal("nonce_utxo should be set")
+	}
+	if ch.NonceUTXO.TxID != opts.NonceUTXO.TxID {
+		t.Errorf("nonce txid: got %s, want %s", ch.NonceUTXO.TxID, opts.NonceUTXO.TxID)
+	}
+	if ch.NonceUTXO.Vout != 0 {
+		t.Errorf("nonce vout: got %d, want 0", ch.NonceUTXO.Vout)
+	}
+	if ch.NonceUTXO.Satoshis != 1 {
+		t.Errorf("nonce satoshis: got %d, want 1", ch.NonceUTXO.Satoshis)
 	}
 
 	// Verify flat request binding fields
@@ -91,6 +111,12 @@ func TestEncodeAndDecode(t *testing.T) {
 		Domain:                "example.com",
 		Method:                "POST",
 		Path:                  "/api/data",
+		NonceUTXO: &NonceRef{
+			TxID:             "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+			Vout:             2,
+			Satoshis:         1,
+			LockingScriptHex: "76a914aabb88ac",
+		},
 	}
 
 	encoded, err := Encode(ch)
@@ -114,6 +140,15 @@ func TestEncodeAndDecode(t *testing.T) {
 	}
 	if decoded.Domain != ch.Domain {
 		t.Errorf("domain mismatch: got %s, want %s", decoded.Domain, ch.Domain)
+	}
+	if decoded.NonceUTXO == nil {
+		t.Fatal("nonce_utxo should survive encode/decode round-trip")
+	}
+	if decoded.NonceUTXO.TxID != ch.NonceUTXO.TxID {
+		t.Errorf("nonce txid mismatch: got %s, want %s", decoded.NonceUTXO.TxID, ch.NonceUTXO.TxID)
+	}
+	if decoded.NonceUTXO.Vout != ch.NonceUTXO.Vout {
+		t.Errorf("nonce vout mismatch: got %d, want %d", decoded.NonceUTXO.Vout, ch.NonceUTXO.Vout)
 	}
 }
 

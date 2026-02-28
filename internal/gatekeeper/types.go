@@ -5,6 +5,7 @@ import (
 	"time"
 
 	deleg "github.com/merkle-works/x402-gateway/internal/delegator"
+	"github.com/merkle-works/x402-gateway/internal/pool"
 	"github.com/merkle-works/x402-gateway/internal/pricing"
 	"github.com/merkle-works/x402-gateway/internal/replay"
 )
@@ -20,6 +21,11 @@ type Config struct {
 
 	// ChallengeCache stores issued challenges for binding verification.
 	ChallengeCache *ChallengeCache
+
+	// NoncePool is the pool of 1-sat UTXOs used for replay-protection nonces.
+	// Each 402 challenge leases a nonce from this pool. The proof transaction
+	// must spend the nonce outpoint, providing Bitcoin-enforced single-use.
+	NoncePool pool.Pool
 
 	// PayeeLockingScriptHex is the hex-encoded locking script for payments.
 	PayeeLockingScriptHex string
@@ -93,6 +99,7 @@ const (
 	ErrDoubleSpend        ErrorCode = "double_spend"
 	ErrInvalidProof       ErrorCode = "invalid_proof"
 	ErrChallengeNotFound  ErrorCode = "challenge_not_found"
+	ErrNonceMissing       ErrorCode = "nonce_missing"
 	ErrNoUTXOsAvailable   ErrorCode = "no_utxos_available"
 	ErrInternalError      ErrorCode = "internal_error"
 )
@@ -100,7 +107,7 @@ const (
 // HTTPStatusForError maps spec error codes to HTTP status codes.
 func HTTPStatusForError(code ErrorCode) int {
 	switch code {
-	case ErrInvalidVersion, ErrInvalidScheme, ErrInvalidProof, ErrChallengeNotFound:
+	case ErrInvalidVersion, ErrInvalidScheme, ErrInvalidProof, ErrChallengeNotFound, ErrNonceMissing:
 		return http.StatusBadRequest
 	case ErrExpiredChallenge, ErrMempoolRejected, ErrInsufficientAmount:
 		return http.StatusPaymentRequired

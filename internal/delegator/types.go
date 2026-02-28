@@ -1,5 +1,7 @@
 package delegator
 
+import "github.com/merkle-works/x402-gateway/internal/challenge"
+
 // DelegationRequest is the input to the delegator's Accept method.
 // The delegator builds the full transaction internally.
 type DelegationRequest struct {
@@ -11,6 +13,10 @@ type DelegationRequest struct {
 
 	// ExpectedAmount is the minimum expected payment amount.
 	ExpectedAmount int64 `json:"amount_sats,omitempty"`
+
+	// NonceUTXO is the nonce UTXO from the challenge that must be spent.
+	// The delegator adds this as input 0 and signs with the nonce key.
+	NonceUTXO *challenge.NonceRef `json:"nonce_utxo,omitempty"`
 }
 
 // DelegationResult is returned after successful delegation.

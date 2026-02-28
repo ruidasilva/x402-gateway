@@ -27,6 +27,7 @@ type BuildOptions struct {
 	Network               string        // "mainnet" or "testnet" (internal only, not on wire)
 	TTL                   time.Duration // challenge validity period
 	BindHeaders           []string      // which request headers to include in binding
+	NonceUTXO             *NonceRef     // nonce UTXO for replay protection (required)
 }
 
 // Build creates a 402 challenge from an HTTP request.
@@ -56,6 +57,9 @@ func Build(req *http.Request, opts BuildOptions) (*Challenge, error) {
 		Query:            req.URL.RawQuery,
 		ReqHeadersSHA256: HashHeaders(req.Header, opts.BindHeaders),
 		ReqBodySHA256:    HashBody(bodyBytes),
+
+		// Nonce UTXO for replay protection
+		NonceUTXO: opts.NonceUTXO,
 
 		// Settlement parameters
 		RequireMempoolAccept:  true,
