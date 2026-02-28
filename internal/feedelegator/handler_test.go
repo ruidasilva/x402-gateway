@@ -100,7 +100,6 @@ func TestHandleDelegateTx_Success(t *testing.T) {
 					TxID:     clientTxID,
 					Vout:     0,
 					Satoshis: clientSats,
-					// No scriptSig — unsigned nonce input
 				},
 			},
 			Outputs: []TxOutput{
@@ -282,14 +281,10 @@ func TestHandleHealth(t *testing.T) {
 func TestHandleUTXOStats(t *testing.T) {
 	handler, feePool := newTestHandler(t, 5)
 
-	// Create a simple nonce pool for testing
-	key, _ := ec.NewPrivateKey()
-	noncePool, _ := pool.NewMemoryPool(key, false, 5*time.Minute, &mockBroadcaster{})
-
 	r := httptest.NewRequest("GET", "/api/utxo/stats", nil)
 	w := httptest.NewRecorder()
 
-	handler.HandleUTXOStats(false, noncePool).ServeHTTP(w, r)
+	handler.HandleUTXOStats(false).ServeHTTP(w, r)
 
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
@@ -310,18 +305,10 @@ func TestHandleUTXOStats(t *testing.T) {
 func TestHandleUTXOHealth(t *testing.T) {
 	handler, _ := newTestHandler(t, 5)
 
-	key, _ := ec.NewPrivateKey()
-	noncePool, _ := pool.NewMemoryPool(key, false, 5*time.Minute, &mockBroadcaster{})
-	// Seed nonce pool with one UTXO so it's healthy
-	scriptHex, _ := noncePool.LockingScriptHex()
-	noncePool.AddExisting([]pool.UTXO{
-		{TxID: repeatHex("a", 64), Vout: 0, Script: scriptHex, Satoshis: 1},
-	})
-
 	r := httptest.NewRequest("GET", "/api/utxo/health", nil)
 	w := httptest.NewRecorder()
 
-	handler.HandleUTXOHealth(noncePool).ServeHTTP(w, r)
+	handler.HandleUTXOHealth().ServeHTTP(w, r)
 
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
@@ -341,13 +328,10 @@ func TestHandleUTXOHealth(t *testing.T) {
 func TestHandleUTXOHealth_Degraded(t *testing.T) {
 	handler, _ := newTestHandler(t, 0) // No fee UTXOs → degraded
 
-	key, _ := ec.NewPrivateKey()
-	noncePool, _ := pool.NewMemoryPool(key, false, 5*time.Minute, &mockBroadcaster{})
-
 	r := httptest.NewRequest("GET", "/api/utxo/health", nil)
 	w := httptest.NewRecorder()
 
-	handler.HandleUTXOHealth(noncePool).ServeHTTP(w, r)
+	handler.HandleUTXOHealth().ServeHTTP(w, r)
 
 	var resp map[string]any
 	json.Unmarshal(w.Body.Bytes(), &resp)

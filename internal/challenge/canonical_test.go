@@ -66,13 +66,9 @@ func TestCanonicalJSON_IntegerPreservation(t *testing.T) {
 func TestCanonicalJSON_Stability(t *testing.T) {
 	// Same input must always produce the same bytes
 	input := map[string]any{
-		"scheme":     "bsv-tx-v1",
-		"v":          "1",
+		"scheme":      "bsv-tx-v1",
+		"v":           "1",
 		"amount_sats": float64(100),
-		"nonce_utxo": map[string]any{
-			"txid": "aaaa",
-			"vout": float64(0),
-		},
 	}
 
 	first, err := CanonicalJSON(input)
@@ -101,20 +97,14 @@ func TestCanonicalJSON_GoldenHash(t *testing.T) {
 		"amount_sats":              float64(100),
 		"payee_locking_script_hex": "76a91489abcdefab88ac",
 		"expires_at":               float64(1700000000),
-		"nonce_utxo": map[string]any{
-			"txid":               "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-			"vout":               float64(0),
-			"locking_script_hex": "76a91489abcdefab88ac",
-			"satoshis":           float64(1),
-		},
-		"domain":             "localhost:8402",
-		"method":             "GET",
-		"path":               "/v1/expensive",
-		"query":              "",
-		"req_headers_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-		"req_body_sha256":    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-		"require_mempool_accept":  true,
-		"confirmations_required":  float64(0),
+		"domain":                   "localhost:8402",
+		"method":                   "GET",
+		"path":                     "/v1/expensive",
+		"query":                    "",
+		"req_headers_sha256":       "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+		"req_body_sha256":          "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+		"require_mempool_accept":   true,
+		"confirmations_required":   float64(0),
 	}
 
 	canonical, err := CanonicalJSON(ch)
@@ -152,12 +142,6 @@ func TestCanonicalJSON_ChallengeStruct(t *testing.T) {
 		AmountSats:            100,
 		PayeeLockingScriptHex: "76a91489abcdefab88ac",
 		ExpiresAt:             1700000000,
-		NonceUTXO: NonceRef{
-			TxID:             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-			Vout:             0,
-			LockingScriptHex: "76a91489abcdefab88ac",
-			Satoshis:         1,
-		},
 		Domain:                "localhost:8402",
 		Method:                "GET",
 		Path:                  "/v1/expensive",

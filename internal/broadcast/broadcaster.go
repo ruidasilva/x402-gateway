@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/bsv-blockchain/go-sdk/transaction"
@@ -83,10 +84,10 @@ func (w *WoCBroadcaster) Broadcast(tx *transaction.Transaction) (*transaction.Br
 		}
 	}
 
-	// WoC returns the txid as a plain string (JSON-quoted)
-	txid := string(respBody)
+	// WoC returns the txid as a JSON-quoted string with possible trailing newline
+	txid := strings.TrimSpace(string(respBody))
 	// Remove surrounding quotes if present
-	if len(txid) > 2 && txid[0] == '"' && txid[len(txid)-1] == '"' {
+	if len(txid) >= 2 && txid[0] == '"' && txid[len(txid)-1] == '"' {
 		txid = txid[1 : len(txid)-1]
 	}
 

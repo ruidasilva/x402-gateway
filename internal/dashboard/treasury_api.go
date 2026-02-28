@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/merkle-works/x402-gateway/internal/pool"
 	"github.com/merkle-works/x402-gateway/internal/treasury"
 )
 
@@ -16,18 +17,19 @@ type TreasuryInfoResponse struct {
 	Network        string `json:"network"`
 	KeyMode        string `json:"keyMode"` // "xpriv" or "wif"
 	DerivationPath string `json:"derivationPath,omitempty"`
-	NoncePool      any    `json:"noncePool"`
 	FeePool        any    `json:"feePool"`
+	PaymentPool    any    `json:"paymentPool"`
 }
 
 // FanoutRequest is the request body for POST /api/v1/treasury/fanout.
 type FanoutRequest struct {
-	Pool            string `json:"pool"`            // "nonce" or "fee"
-	Count           int    `json:"count"`           // number of 1-sat UTXOs to create
+	Pool            string `json:"pool"`            // "fee" or "payment"
+	Count           int    `json:"count"`           // number of UTXOs to create
 	FundingTxID     string `json:"fundingTxid"`     // txid of funding UTXO
 	FundingVout     uint32 `json:"fundingVout"`     // vout of funding UTXO
 	FundingScript   string `json:"fundingScript"`   // locking script hex of funding UTXO
 	FundingSatoshis uint64 `json:"fundingSatoshis"` // value of funding UTXO
+	SigningKey      string `json:"signingKey"`      // optional: "treasury", "fee", or "payment" (default: treasury)
 }
 
 // FanoutResponse is the response from a successful fan-out operation.
@@ -72,6 +74,56 @@ func (fh *fanoutHistory) list() []FanoutHistoryEntry {
 	return out
 }
 
+// TreasuryUTXOResponse is the response from GET /api/v1/treasury/utxos.
+type TreasuryUTXOResponse struct {
+	UTXOs    []TreasuryUTXO `json:"utxos"`
+	LastPoll string         `json:"lastPoll,omitempty"`
+	Error    string         `json:"error,omitempty"`
+}
+
+// TreasuryUTXO represents an unspent UTXO at the treasury address.
+type TreasuryUTXO struct {
+	TxID     string `json:"txid"`
+	Vout     uint32 `json:"vout"`
+	Script   string `json:"script"`
+	Satoshis uint64 `json:"satoshis"`
+}
+
+// handleTreasuryUTXOs returns unspent UTXOs at the treasury address.
+func (d *DashboardAPI) handleTreasuryUTXOs() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if d.watcher == nil {
+			writeJSON(w, http.StatusOK, TreasuryUTXOResponse{
+				UTXOs: []TreasuryUTXO{},
+				Error: "treasury watcher not configured",
+			})
+			return
+		}
+
+		utxos := d.watcher.GetUTXOs()
+		lastPoll, lastErr := d.watcher.LastPoll()
+
+		resp := TreasuryUTXOResponse{
+			UTXOs: make([]TreasuryUTXO, len(utxos)),
+		}
+		if !lastPoll.IsZero() {
+			resp.LastPoll = lastPoll.Format(time.RFC3339)
+		}
+		if lastErr != nil {
+			resp.Error = lastErr.Error()
+		}
+		for i, u := range utxos {
+			resp.UTXOs[i] = TreasuryUTXO{
+				TxID:     u.TxID,
+				Vout:     u.Vout,
+				Script:   u.Script,
+				Satoshis: u.Satoshis,
+			}
+		}
+		writeJSON(w, http.StatusOK, resp)
+	}
+}
+
 // handleTreasuryInfo returns treasury address and pool status.
 func (d *DashboardAPI) handleTreasuryInfo() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -87,8 +139,8 @@ func (d *DashboardAPI) handleTreasuryInfo() http.HandlerFunc {
 			Network:        d.cfg.BSVNetwork,
 			KeyMode:        keyMode,
 			DerivationPath: derivationPath,
-			NoncePool:      d.noncePool.Stats(),
 			FeePool:        d.feePool.Stats(),
+			PaymentPool:    d.paymentPool.Stats(),
 		}
 
 		writeJSON(w, http.StatusOK, resp)
@@ -107,9 +159,9 @@ func (d *DashboardAPI) handleTreasuryFanout() http.HandlerFunc {
 		}
 
 		// Validate pool selection
-		if req.Pool != "nonce" && req.Pool != "fee" {
+		if req.Pool != "fee" && req.Pool != "payment" {
 			writeJSON(w, http.StatusBadRequest, map[string]any{
-				"error": "pool must be 'nonce' or 'fee'",
+				"error": "pool must be 'fee' or 'payment'",
 			})
 			return
 		}
@@ -126,10 +178,31 @@ func (d *DashboardAPI) handleTreasuryFanout() http.HandlerFunc {
 			return
 		}
 
-		// Determine which key to use for signing
-		signingKey := d.keys.NonceKey
-		if req.Pool == "fee" {
+		// Determine signing key (default: treasury)
+		signingKey := d.keys.TreasuryKey
+		switch req.SigningKey {
+		case "fee":
 			signingKey = d.keys.FeeKey
+		case "payment":
+			signingKey = d.keys.PaymentKey
+		case "treasury", "":
+			signingKey = d.keys.TreasuryKey
+		default:
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "signingKey must be 'treasury', 'fee', or 'payment'",
+			})
+			return
+		}
+
+		// Determine target address and output denomination for each pool
+		var targetAddr string
+		var outputSats uint64 = 1 // default for fee pool
+		switch req.Pool {
+		case "fee":
+			targetAddr = d.keys.FeeAddress
+		case "payment":
+			targetAddr = d.keys.PaymentAddress
+			outputSats = 100 // payment pool uses 100-sat UTXOs
 		}
 
 		// Build and broadcast fan-out transaction
@@ -143,6 +216,8 @@ func (d *DashboardAPI) handleTreasuryFanout() http.HandlerFunc {
 				FundingSatoshis: req.FundingSatoshis,
 				OutputCount:     req.Count,
 				FeeRate:         d.cfg.FeeRate,
+				TargetAddress:   targetAddr,
+				OutputSatoshis:  outputSats,
 			},
 			d.broadcaster,
 		)
@@ -154,9 +229,12 @@ func (d *DashboardAPI) handleTreasuryFanout() http.HandlerFunc {
 		}
 
 		// Add new UTXOs to the appropriate pool
-		targetPool := d.noncePool
-		if req.Pool == "fee" {
+		var targetPool pool.Pool
+		switch req.Pool {
+		case "fee":
 			targetPool = d.feePool
+		case "payment":
+			targetPool = d.paymentPool
 		}
 		targetPool.AddExisting(result.UTXOs)
 

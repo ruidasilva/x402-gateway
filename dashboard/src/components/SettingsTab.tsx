@@ -90,8 +90,8 @@ export default function SettingsTab() {
           <span className="config-value">{config.keyMode === 'xpriv' ? 'HD Wallet (xPriv)' : 'Single Key (WIF)'}</span>
         </div>
         <div className="config-row">
-          <span className="config-key">Nonce Lease TTL</span>
-          <span className="config-value">{config.nonceLeaseTTLSeconds}s</span>
+          <span className="config-key">Lease TTL</span>
+          <span className="config-value">{config.leaseTTLSeconds}s</span>
         </div>
       </div>
 
@@ -102,7 +102,7 @@ export default function SettingsTab() {
         </div>
         {[
           { label: 'Payee', addr: config.payeeAddress },
-          { label: 'Nonce Pool', addr: config.nonceAddress },
+          { label: 'Payment Pool', addr: config.paymentAddress },
           { label: 'Fee Pool', addr: config.feeAddress },
           { label: 'Treasury', addr: config.treasuryAddress },
         ].map(({ label, addr }) => (

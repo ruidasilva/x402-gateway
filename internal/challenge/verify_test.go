@@ -5,8 +5,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/merkle-works/x402-gateway/internal/pool"
 )
 
 func buildTestChallenge(t *testing.T) *Challenge {
@@ -14,13 +12,6 @@ func buildTestChallenge(t *testing.T) *Challenge {
 
 	req := httptest.NewRequest("GET", "http://localhost:8402/v1/expensive?foo=bar", nil)
 	req.Header.Set("Content-Type", "application/json")
-
-	nonceUTXO := &pool.UTXO{
-		TxID:     strings.Repeat("a", 64),
-		Vout:     0,
-		Script:   "76a91489abcdefab89abcdefab89abcdefab89abcdefab88ac",
-		Satoshis: 1,
-	}
 
 	opts := BuildOptions{
 		PayeeLockingScriptHex: "76a91489abcdefab89abcdefab89abcdefab89abcdefab88ac",
@@ -30,7 +21,7 @@ func buildTestChallenge(t *testing.T) *Challenge {
 		BindHeaders:           []string{"Content-Type"},
 	}
 
-	ch, err := Build(req, nonceUTXO, opts)
+	ch, err := Build(req, opts)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}

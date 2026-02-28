@@ -14,12 +14,12 @@ type ConfigResponse struct {
 	PoolReplenishThreshold int     `json:"poolReplenishThreshold"`
 	PoolOptimalSize        int     `json:"poolOptimalSize"`
 	RedisEnabled           bool    `json:"redisEnabled"`
-	NoncePoolSize          int     `json:"noncePoolSize"`
-	NonceLeaseTTL          int     `json:"nonceLeaseTTLSeconds"`
+	PoolSize               int     `json:"poolSize"`
+	LeaseTTL               int     `json:"leaseTTLSeconds"`
 	PayeeAddress           string  `json:"payeeAddress"`
 	KeyMode                string  `json:"keyMode"` // "xpriv" or "wif"
-	NonceAddress           string  `json:"nonceAddress"`
 	FeeAddress             string  `json:"feeAddress"`
+	PaymentAddress         string  `json:"paymentAddress"`
 	TreasuryAddress        string  `json:"treasuryAddress"`
 }
 
@@ -46,12 +46,12 @@ func (d *DashboardAPI) handleGetConfig() http.HandlerFunc {
 			PoolReplenishThreshold: d.cfg.PoolReplenishThreshold,
 			PoolOptimalSize:        d.cfg.PoolOptimalSize,
 			RedisEnabled:           d.cfg.RedisEnabled,
-			NoncePoolSize:          d.cfg.NoncePoolSize,
-			NonceLeaseTTL:          int(d.cfg.NonceLeaseTTL.Seconds()),
+			PoolSize:               d.cfg.PoolSize,
+			LeaseTTL:               int(d.cfg.LeaseTTL.Seconds()),
 			PayeeAddress:           d.payeeAddr,
 			KeyMode:                keyMode,
-			NonceAddress:           d.keys.NonceAddress,
 			FeeAddress:             d.keys.FeeAddress,
+			PaymentAddress:         d.keys.PaymentAddress,
 			TreasuryAddress:        d.keys.TreasuryAddress,
 		}
 

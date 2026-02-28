@@ -1,4 +1,4 @@
-import type { ConfigResponse, StatsSummary, TimeseriesPoint, TreasuryInfo, FanoutHistoryEntry } from './types'
+import type { ConfigResponse, StatsSummary, TimeseriesPoint, TreasuryInfo, TreasuryUTXOsResponse, FanoutHistoryEntry } from './types'
 
 const BASE = ''
 
@@ -52,6 +52,10 @@ export async function triggerFanout(req: {
     method: 'POST',
     body: JSON.stringify(req),
   })
+}
+
+export async function getTreasuryUTXOs(): Promise<TreasuryUTXOsResponse> {
+  return fetchJSON('/api/v1/treasury/utxos')
 }
 
 export async function getFanoutHistory(): Promise<{ success: boolean; history: FanoutHistoryEntry[] }> {

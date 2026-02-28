@@ -13,9 +13,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/bsv-blockchain/go-sdk/script"
-	"github.com/bsv-blockchain/go-sdk/transaction"
-
 	"github.com/merkle-works/x402-gateway/internal/challenge"
 	"github.com/merkle-works/x402-gateway/internal/gatekeeper"
 )
@@ -114,54 +111,17 @@ func main() {
 	fmt.Printf("    Scheme:   %s v%s\n", ch.Scheme, ch.V)
 	fmt.Printf("    Payee:    %s\n", truncate(ch.PayeeLockingScriptHex, 40))
 	fmt.Printf("    Amount:   %d sats\n", ch.AmountSats)
-	fmt.Printf("    Nonce:    %s:%d\n", truncate(ch.NonceUTXO.TxID, 16), ch.NonceUTXO.Vout)
 	fmt.Printf("    Hash:     %s\n", truncate(challengeHash, 24))
 
 	// ──────────────────────────────────────────────────────────
-	// Step 3: Build partial transaction
-	// ──────────────────────────────────────────────────────────
-	// Input 0: nonce UTXO (unsigned in v0.1)
-	// Output 0: payee locking script for the challenge amount
-	partialTx := transaction.NewTransaction()
-
-	// Add nonce input (no signing template — client doesn't sign in v0.1)
-	err = partialTx.AddInputFrom(
-		ch.NonceUTXO.TxID,
-		ch.NonceUTXO.Vout,
-		ch.NonceUTXO.LockingScriptHex,
-		uint64(ch.NonceUTXO.Satoshis),
-		nil, // no unlocking template — client doesn't sign in v0.1
-	)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error adding nonce input: %s\n", err)
-		os.Exit(1)
-	}
-
-	// Add payee output using locking script hex directly
-	payeeScriptBytes, err := hex.DecodeString(ch.PayeeLockingScriptHex)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error decoding payee script: %s\n", err)
-		os.Exit(1)
-	}
-	payeeScript := script.Script(payeeScriptBytes)
-	partialTx.AddOutput(&transaction.TransactionOutput{
-		Satoshis:      uint64(ch.AmountSats),
-		LockingScript: &payeeScript,
-	})
-
-	partialTxHex := partialTx.Hex()
-	fmt.Printf("  Partial TX: %s...\n", truncate(partialTxHex, 40))
-
-	// ──────────────────────────────────────────────────────────
-	// Step 4: Send partial tx to delegator (fee delegation)
+	// Step 3: Send challenge to delegator (full tx delegation)
 	// ──────────────────────────────────────────────────────────
 	fmt.Printf("\n→ POST %s (fee delegation)\n", delegateEndpoint)
 
 	delegReq := map[string]any{
-		"partial_tx":     partialTxHex,
-		"challenge_hash": challengeHash,
-		"nonce_txid":     ch.NonceUTXO.TxID,
-		"nonce_vout":     ch.NonceUTXO.Vout,
+		"challenge_hash":           challengeHash,
+		"payee_locking_script_hex": ch.PayeeLockingScriptHex,
+		"amount_sats":              ch.AmountSats,
 	}
 	delegBody, _ := json.Marshal(delegReq)
 
@@ -194,7 +154,7 @@ func main() {
 	fmt.Printf("  TxID:    %s\n", truncate(delegResult.TxID, 24))
 
 	// ──────────────────────────────────────────────────────────
-	// Step 5: Build spec-compliant proof
+	// Step 4: Build spec-compliant proof
 	// ──────────────────────────────────────────────────────────
 
 	// Encode raw tx bytes as base64
@@ -235,7 +195,7 @@ func main() {
 	}
 
 	// ──────────────────────────────────────────────────────────
-	// Step 6: Retry request with X402-Proof header
+	// Step 5: Retry request with X402-Proof header
 	// ──────────────────────────────────────────────────────────
 	fmt.Printf("\n→ %s %s (with X402-Proof)\n", httpMethod, targetURL)
 

@@ -10,13 +10,10 @@ import (
 	"io"
 	"net/http"
 	"time"
-
-	"github.com/merkle-works/x402-gateway/internal/pool"
 )
 
 const (
 	// Scheme is the x402 payment scheme identifier.
-	// Delegation is architectural, not encoded in the scheme string.
 	Scheme = "bsv-tx-v1"
 
 	// Version is the protocol version.
@@ -32,9 +29,8 @@ type BuildOptions struct {
 	BindHeaders           []string      // which request headers to include in binding
 }
 
-// Build creates a 402 challenge from an HTTP request and a leased nonce UTXO.
-// The challenge uses flat fields per 04-Protocol-Spec.md.
-func Build(req *http.Request, nonceUTXO *pool.UTXO, opts BuildOptions) (*Challenge, error) {
+// Build creates a 402 challenge from an HTTP request.
+func Build(req *http.Request, opts BuildOptions) (*Challenge, error) {
 	// Read and restore the request body
 	var bodyBytes []byte
 	if req.Body != nil {
@@ -47,14 +43,8 @@ func Build(req *http.Request, nonceUTXO *pool.UTXO, opts BuildOptions) (*Challen
 	}
 
 	ch := &Challenge{
-		V:      Version,
-		Scheme: Scheme,
-		NonceUTXO: NonceRef{
-			TxID:             nonceUTXO.TxID,
-			Vout:             nonceUTXO.Vout,
-			LockingScriptHex: nonceUTXO.Script,
-			Satoshis:         int64(nonceUTXO.Satoshis),
-		},
+		V:                     Version,
+		Scheme:                Scheme,
 		AmountSats:            opts.Amount,
 		PayeeLockingScriptHex: opts.PayeeLockingScriptHex,
 		ExpiresAt:             time.Now().Add(opts.TTL).Unix(),

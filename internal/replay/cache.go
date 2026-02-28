@@ -1,13 +1,12 @@
 package replay
 
 import (
-	"fmt"
 	"sync"
 	"time"
 )
 
-// Cache provides LRU-evicting, TTL-based replay detection for nonce outpoints.
-// Key: "txid:vout" of the nonce UTXO → Value: the txid that spent it.
+// Cache provides LRU-evicting, TTL-based replay detection.
+// Key: challenge hash → Value: the txid that settled it.
 type Cache struct {
 	mu      sync.RWMutex
 	items   map[string]entry
@@ -31,13 +30,12 @@ func New(ttl time.Duration, maxSize int) *Cache {
 	}
 }
 
-// Check returns the spending txid if the nonce outpoint has already been spent.
+// Check returns the spending txid if the challenge has already been settled.
 // Returns ("", false) if not found.
-func (c *Cache) Check(nonceTxID string, nonceVout uint32) (string, bool) {
+func (c *Cache) Check(key string) (string, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	key := outpointKey(nonceTxID, nonceVout)
 	e, ok := c.items[key]
 	if !ok {
 		return "", false
@@ -51,12 +49,10 @@ func (c *Cache) Check(nonceTxID string, nonceVout uint32) (string, bool) {
 	return e.spendTxID, true
 }
 
-// Record stores a nonce outpoint → spending txid mapping.
-func (c *Cache) Record(nonceTxID string, nonceVout uint32, spendTxID string) {
+// Record stores a challenge hash → spending txid mapping.
+func (c *Cache) Record(key string, spendTxID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	key := outpointKey(nonceTxID, nonceVout)
 
 	// Evict if at capacity
 	if len(c.items) >= c.maxSize {
@@ -108,8 +104,4 @@ func (c *Cache) evictOldest() {
 	oldest := c.order[0]
 	c.order = c.order[1:]
 	delete(c.items, oldest)
-}
-
-func outpointKey(txid string, vout uint32) string {
-	return fmt.Sprintf("%s:%d", txid, vout)
 }
