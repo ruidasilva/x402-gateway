@@ -13,30 +13,75 @@ import (
 	"os"
 	"strings"
 
+	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
+	"github.com/bsv-blockchain/go-sdk/script"
+	"github.com/bsv-blockchain/go-sdk/transaction"
+	sighash "github.com/bsv-blockchain/go-sdk/transaction/sighash"
+	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
+
 	"github.com/merkle-works/x402-gateway/internal/challenge"
 	"github.com/merkle-works/x402-gateway/internal/gatekeeper"
 )
+
+// x402ClientSigHash is SIGHASH_ALL | ANYONECANPAY | FORKID = 0xC1.
+// Client inputs must use this flag so the delegator can append fee inputs.
+var x402ClientSigHash = sighash.Flag(sighash.AllForkID | sighash.AnyOneCanPay)
 
 func main() {
 	delegatorURL := flag.String("delegator", "", "Delegator URL (default: derives from target host)")
 	method := flag.String("method", "GET", "HTTP method (GET or POST)")
 	data := flag.String("data", "", "Request body (for POST)")
+	nonceKeyWIF := flag.String("nonce-key", "", "WIF private key for signing nonce input (required)")
+	paymentKeyWIF := flag.String("payment-key", "", "WIF private key for signing payment input (required)")
+	paymentTxID := flag.String("payment-txid", "", "Payment UTXO txid (required)")
+	paymentVout := flag.Uint("payment-vout", 0, "Payment UTXO vout")
+	paymentSats := flag.Uint64("payment-sats", 0, "Payment UTXO satoshis (required)")
+	paymentScript := flag.String("payment-script", "", "Payment UTXO locking script hex (required)")
+	broadcastURL := flag.String("broadcast-url", "", "Broadcast endpoint URL (default: derives from target host)")
 	flag.Parse()
 
 	if flag.NArg() < 1 {
 		fmt.Fprintf(os.Stderr, "Usage: x402-client [flags] <url>\n\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
-		fmt.Fprintf(os.Stderr, "  --delegator <url>   Delegator endpoint URL\n")
-		fmt.Fprintf(os.Stderr, "  --method <method>   HTTP method (default: GET)\n")
-		fmt.Fprintf(os.Stderr, "  --data <body>       Request body (for POST)\n")
+		fmt.Fprintf(os.Stderr, "  --delegator <url>        Delegator endpoint URL\n")
+		fmt.Fprintf(os.Stderr, "  --method <method>        HTTP method (default: GET)\n")
+		fmt.Fprintf(os.Stderr, "  --data <body>            Request body (for POST)\n")
+		fmt.Fprintf(os.Stderr, "  --nonce-key <WIF>        Private key for nonce input (required)\n")
+		fmt.Fprintf(os.Stderr, "  --payment-key <WIF>      Private key for payment input (required)\n")
+		fmt.Fprintf(os.Stderr, "  --payment-txid <hex>     Payment UTXO txid (required)\n")
+		fmt.Fprintf(os.Stderr, "  --payment-vout <n>       Payment UTXO vout (default: 0)\n")
+		fmt.Fprintf(os.Stderr, "  --payment-sats <n>       Payment UTXO satoshis (required)\n")
+		fmt.Fprintf(os.Stderr, "  --payment-script <hex>   Payment UTXO locking script hex (required)\n")
+		fmt.Fprintf(os.Stderr, "  --broadcast-url <url>    Broadcast endpoint URL\n")
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
-		fmt.Fprintf(os.Stderr, "  x402-client http://localhost:8402/v1/expensive\n")
-		fmt.Fprintf(os.Stderr, "  x402-client --method POST --data '{\"q\":\"test\"}' http://localhost:8402/v1/expensive\n")
+		fmt.Fprintf(os.Stderr, "  x402-client --nonce-key L1... --payment-key L2... --payment-txid abc... --payment-sats 100 --payment-script 76a9... http://localhost:8402/v1/expensive\n")
 		os.Exit(1)
 	}
 
 	targetURL := flag.Arg(0)
 	httpMethod := strings.ToUpper(*method)
+
+	// Validate required flags
+	if *nonceKeyWIF == "" || *paymentKeyWIF == "" {
+		fmt.Fprintf(os.Stderr, "Error: --nonce-key and --payment-key are required\n")
+		os.Exit(1)
+	}
+	if *paymentTxID == "" || *paymentSats == 0 || *paymentScript == "" {
+		fmt.Fprintf(os.Stderr, "Error: --payment-txid, --payment-sats, and --payment-script are required\n")
+		os.Exit(1)
+	}
+
+	// Parse keys
+	nonceKey, err := ec.PrivateKeyFromWif(*nonceKeyWIF)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error parsing nonce key: %s\n", err)
+		os.Exit(1)
+	}
+	paymentKey, err := ec.PrivateKeyFromWif(*paymentKeyWIF)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error parsing payment key: %s\n", err)
+		os.Exit(1)
+	}
 
 	// Derive delegator URL if not provided
 	delegateEndpoint := *delegatorURL
@@ -49,10 +94,22 @@ func main() {
 		delegateEndpoint = fmt.Sprintf("%s://%s/delegate/x402", u.Scheme, u.Host)
 	}
 
+	// Derive broadcast URL if not provided
+	bcastEndpoint := *broadcastURL
+	if bcastEndpoint == "" {
+		u, err := url.Parse(targetURL)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error parsing URL: %s\n", err)
+			os.Exit(1)
+		}
+		// Default: use WoC testnet
+		bcastEndpoint = fmt.Sprintf("%s://%s/api/v1/tx", u.Scheme, u.Host)
+	}
+
 	// ──────────────────────────────────────────────────────────
 	// Step 1: Make initial request — expect 402
 	// ──────────────────────────────────────────────────────────
-	fmt.Printf("→ %s %s\n", httpMethod, targetURL)
+	fmt.Printf("-> %s %s\n", httpMethod, targetURL)
 	var bodyReader io.Reader
 	if *data != "" {
 		bodyReader = strings.NewReader(*data)
@@ -75,12 +132,12 @@ func main() {
 
 	if resp.StatusCode != http.StatusPaymentRequired {
 		respBody, _ := io.ReadAll(resp.Body)
-		fmt.Printf("← %d (expected 402)\n", resp.StatusCode)
+		fmt.Printf("<- %d (expected 402)\n", resp.StatusCode)
 		fmt.Printf("%s\n", respBody)
 		os.Exit(0)
 	}
 
-	fmt.Printf("← 402 Payment Required\n")
+	fmt.Printf("<- 402 Payment Required\n")
 
 	// ──────────────────────────────────────────────────────────
 	// Step 2: Parse challenge from X402-Challenge header
@@ -100,7 +157,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Compute challenge hash
 	challengeHash, err := challenge.ComputeHash(ch)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error computing challenge hash: %s\n", err)
@@ -117,17 +173,73 @@ func main() {
 	}
 
 	// ──────────────────────────────────────────────────────────
-	// Step 3: Send challenge to delegator (full tx delegation)
+	// Step 3: Construct partial transaction (client responsibility)
 	// ──────────────────────────────────────────────────────────
-	fmt.Printf("\n→ POST %s (fee delegation)\n", delegateEndpoint)
+	fmt.Printf("\n  Constructing partial tx...\n")
+
+	if ch.NonceUTXO == nil {
+		fmt.Fprintf(os.Stderr, "Error: challenge has no nonce_utxo\n")
+		os.Exit(1)
+	}
+
+	tx := transaction.NewTransaction()
+
+	// Input 0: nonce UTXO (signed with nonceKey, 0xC1)
+	nonceUnlocker, err := p2pkh.Unlock(nonceKey, &x402ClientSigHash)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating nonce unlocker: %s\n", err)
+		os.Exit(1)
+	}
+	if err := tx.AddInputFrom(ch.NonceUTXO.TxID, ch.NonceUTXO.Vout, ch.NonceUTXO.LockingScriptHex, ch.NonceUTXO.Satoshis, nonceUnlocker); err != nil {
+		fmt.Fprintf(os.Stderr, "Error adding nonce input: %s\n", err)
+		os.Exit(1)
+	}
+
+	// Input 1: payment UTXO (signed with paymentKey, 0xC1)
+	paymentUnlocker, err := p2pkh.Unlock(paymentKey, &x402ClientSigHash)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating payment unlocker: %s\n", err)
+		os.Exit(1)
+	}
+	if err := tx.AddInputFrom(*paymentTxID, uint32(*paymentVout), *paymentScript, *paymentSats, paymentUnlocker); err != nil {
+		fmt.Fprintf(os.Stderr, "Error adding payment input: %s\n", err)
+		os.Exit(1)
+	}
+
+	// Output 0: payee
+	payeeScriptBytes, err := hex.DecodeString(ch.PayeeLockingScriptHex)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error decoding payee script: %s\n", err)
+		os.Exit(1)
+	}
+	payeeScript := script.Script(payeeScriptBytes)
+	tx.AddOutput(&transaction.TransactionOutput{
+		Satoshis:      uint64(ch.AmountSats),
+		LockingScript: &payeeScript,
+	})
+
+	// Sign all client inputs with 0xC1 sighash
+	if err := tx.Sign(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error signing partial tx: %s\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("  Partial tx: %d inputs, %d outputs\n", tx.InputCount(), len(tx.Outputs))
+
+	// ──────────────────────────────────────────────────────────
+	// Step 4: Send partial tx to delegator for fee addition
+	// ──────────────────────────────────────────────────────────
+	fmt.Printf("\n-> POST %s (fee delegation)\n", delegateEndpoint)
 
 	delegReq := map[string]any{
+		"partial_tx_hex":           tx.Hex(),
 		"challenge_hash":           challengeHash,
 		"payee_locking_script_hex": ch.PayeeLockingScriptHex,
 		"amount_sats":              ch.AmountSats,
-	}
-	if ch.NonceUTXO != nil {
-		delegReq["nonce_utxo"] = ch.NonceUTXO
+		"nonce_outpoint": map[string]any{
+			"txid": ch.NonceUTXO.TxID,
+			"vout": ch.NonceUTXO.Vout,
+		},
 	}
 	delegBody, _ := json.Marshal(delegReq)
 
@@ -141,7 +253,7 @@ func main() {
 	delegRespBody, _ := io.ReadAll(delegResp.Body)
 
 	if delegResp.StatusCode != http.StatusOK {
-		fmt.Printf("← %d (delegator error)\n", delegResp.StatusCode)
+		fmt.Printf("<- %d (delegator error)\n", delegResp.StatusCode)
 		fmt.Printf("  %s\n", delegRespBody)
 		os.Exit(1)
 	}
@@ -156,14 +268,34 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("← 200 Delegation accepted\n")
+	fmt.Printf("<- 200 Delegation accepted\n")
 	fmt.Printf("  TxID:    %s\n", truncate(delegResult.TxID, 24))
 
 	// ──────────────────────────────────────────────────────────
-	// Step 4: Build spec-compliant proof
+	// Step 5: Broadcast to network (client responsibility per spec)
+	// ──────────────────────────────────────────────────────────
+	fmt.Printf("\n-> Broadcasting tx %s...\n", truncate(delegResult.TxID, 16))
+
+	bcastBody, _ := json.Marshal(map[string]string{
+		"txhex": delegResult.RawTxHex,
+	})
+	bcastResp, err := http.Post(bcastEndpoint, "application/json", bytes.NewReader(bcastBody))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: broadcast failed: %s (continuing with proof)\n", err)
+	} else {
+		defer bcastResp.Body.Close()
+		bcastRespBody, _ := io.ReadAll(bcastResp.Body)
+		if bcastResp.StatusCode == http.StatusOK {
+			fmt.Printf("<- 200 Broadcast accepted\n")
+		} else {
+			fmt.Printf("<- %d Broadcast response: %s\n", bcastResp.StatusCode, string(bcastRespBody))
+		}
+	}
+
+	// ──────────────────────────────────────────────────────────
+	// Step 6: Build spec-compliant proof
 	// ──────────────────────────────────────────────────────────
 
-	// Encode raw tx bytes as base64
 	rawTxBytes, err := hex.DecodeString(delegResult.RawTxHex)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error decoding rawtx hex: %s\n", err)
@@ -171,7 +303,6 @@ func main() {
 	}
 	rawTxB64 := base64.StdEncoding.EncodeToString(rawTxBytes)
 
-	// Compute request binding hashes
 	var dataBytes []byte
 	if *data != "" {
 		dataBytes = []byte(*data)
@@ -201,9 +332,9 @@ func main() {
 	}
 
 	// ──────────────────────────────────────────────────────────
-	// Step 5: Retry request with X402-Proof header
+	// Step 7: Retry request with X402-Proof header
 	// ──────────────────────────────────────────────────────────
-	fmt.Printf("\n→ %s %s (with X402-Proof)\n", httpMethod, targetURL)
+	fmt.Printf("\n-> %s %s (with X402-Proof)\n", httpMethod, targetURL)
 
 	var retryBody io.Reader
 	if *data != "" {
@@ -227,10 +358,13 @@ func main() {
 	defer resp2.Body.Close()
 
 	resp2Body, _ := io.ReadAll(resp2.Body)
-	fmt.Printf("← %d\n", resp2.StatusCode)
+	fmt.Printf("<- %d\n", resp2.StatusCode)
 
 	if receipt := resp2.Header.Get("X402-Receipt"); receipt != "" {
 		fmt.Printf("  Receipt: %s\n", truncate(receipt, 24))
+	}
+	if status := resp2.Header.Get("X402-Status"); status != "" {
+		fmt.Printf("  Status:  %s\n", status)
 	}
 
 	// Pretty-print JSON response
@@ -243,9 +377,9 @@ func main() {
 	}
 
 	if resp2.StatusCode == 200 {
-		fmt.Printf("\n✓ Payment successful!\n")
+		fmt.Printf("\nPayment successful!\n")
 	} else {
-		fmt.Printf("\n✗ Payment failed (status %d)\n", resp2.StatusCode)
+		fmt.Printf("\nPayment failed (status %d)\n", resp2.StatusCode)
 		os.Exit(1)
 	}
 }

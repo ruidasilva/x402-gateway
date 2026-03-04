@@ -78,19 +78,20 @@ func main() {
 	// Fee key is used by delegator and fee delegator
 	key := keys.FeeKey
 
-	// Select broadcaster based on config
-	var bcast transaction.Broadcaster
+	// Select broadcaster based on config (wrapped in Swappable for hot-swap via dashboard)
+	var inner transaction.Broadcaster
 	demoMode := false
 	switch cfg.Broadcaster {
 	case "woc":
-		bcast = broadcast.NewWoCBroadcaster(mainnet)
+		inner = broadcast.NewWoCBroadcaster(mainnet)
 	case "mock":
-		bcast = &broadcast.MockBroadcaster{}
+		inner = &broadcast.MockBroadcaster{}
 		demoMode = true
 	default:
 		logger.Error("unsupported BROADCASTER value", "value", cfg.Broadcaster)
 		os.Exit(1)
 	}
+	bcast := broadcast.NewSwappable(inner, cfg.Broadcaster)
 
 	// Create UTXO pools — either Redis-backed (production) or in-memory (demo)
 	// Three pools:
@@ -192,8 +193,8 @@ func main() {
 	replayCache := replay.New(10*time.Minute, 10000)
 
 	// Create delegator (the foundational settlement primitive)
-	// Three pools: nonce (replay protection), fee (miner fees), payment (service payment)
-	deleg, err := delegator.New(key, mainnet, feePool, paymentPool, keys.PaymentKey, noncePool, keys.NonceKey, bcast, replayCache, cfg.FeeRate, true)
+	// Delegator only adds fee inputs and signs those — client constructs partial tx
+	deleg, err := delegator.New(key, mainnet, feePool, replayCache, cfg.FeeRate)
 	if err != nil {
 		logger.Error("failed to create delegator", "error", err)
 		os.Exit(1)
@@ -301,6 +302,7 @@ func main() {
 	// --- Protected endpoint (gated by x402 middleware) ---
 
 	gatekeeperCfg := gatekeeper.Config{
+		MempoolChecker:        bcast, // Swappable implements broadcast.MempoolChecker
 		NoncePool:             noncePool,
 		ReplayCache:           replayCache,
 		ChallengeCache:        challengeCache,
@@ -336,7 +338,12 @@ func main() {
 	mux.HandleFunc("GET /api/v1/events/stream", handleEvents(eventBus))
 
 	// --- Demo/Testing endpoints ---
-	mux.HandleFunc("POST /demo/build-proof", handleBuildProof(key, mainnet, deleg, payeeLockingScriptHex))
+	mux.HandleFunc("POST /demo/build-proof", handleBuildProof(demoClientDeps{
+		nonceKey:    keys.NonceKey,
+		paymentKey:  keys.PaymentKey,
+		noncePool:   noncePool,
+		paymentPool: paymentPool,
+	}, deleg, payeeLockingScriptHex))
 	mux.HandleFunc("GET /demo/events", handleEvents(eventBus)) // backward compat
 	mux.HandleFunc("GET /demo/info", handleDemoInfo(cfg, noncePool, feePool, paymentPool, payeeAddr))
 

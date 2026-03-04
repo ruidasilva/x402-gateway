@@ -127,7 +127,7 @@ func TestHTTPStatusForError(t *testing.T) {
 		{ErrInvalidProof, 400},
 		{ErrChallengeNotFound, 400},
 		{ErrExpiredChallenge, 402},
-		{ErrMempoolRejected, 402},
+		{ErrMempoolRejected, 409},
 		{ErrInsufficientAmount, 402},
 		{ErrInvalidBinding, 403},
 		{ErrInvalidPayee, 403},

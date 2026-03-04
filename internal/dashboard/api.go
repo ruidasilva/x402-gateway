@@ -5,8 +5,8 @@ import (
 	"time"
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
-	"github.com/bsv-blockchain/go-sdk/transaction"
 
+	"github.com/merkle-works/x402-gateway/internal/broadcast"
 	"github.com/merkle-works/x402-gateway/internal/config"
 	"github.com/merkle-works/x402-gateway/internal/hdwallet"
 	"github.com/merkle-works/x402-gateway/internal/pool"
@@ -23,7 +23,7 @@ type DashboardAPI struct {
 	stats       *StatsCollector
 	treasuryKey *ec.PrivateKey
 	mainnet     bool
-	broadcaster transaction.Broadcaster
+	broadcaster *broadcast.Swappable
 	startTime   time.Time
 	payeeAddr   string
 	watcher     *treasury.TreasuryWatcher // may be nil if watcher not configured
@@ -36,7 +36,7 @@ func NewDashboardAPI(
 	noncePool, feePool, paymentPool pool.Pool,
 	treasuryKey *ec.PrivateKey,
 	mainnet bool,
-	bcast transaction.Broadcaster,
+	bcast *broadcast.Swappable,
 	startTime time.Time,
 	payeeAddr string,
 	watcher *treasury.TreasuryWatcher,

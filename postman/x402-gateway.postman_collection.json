@@ -1,0 +1,1452 @@
+{
+	"info": {
+		"_postman_id": "x402-gateway-collection",
+		"name": "x402 Payment Gateway",
+		"description": "Complete test collection for the x402 BSV payment gateway reference implementation.\n\nThe default base URL is `http://localhost:8402`.\n\n## x402 Payment Flow\n1. GET /v1/expensive → 402 + X402-Challenge header\n2. POST /demo/build-proof with challenge → proof_header\n3. GET /v1/expensive with X402-Proof header → 200\n4. Replay same proof → 409 (double_spend)\n\n## Running the Collection\nUse the **Full Demo Flow** folder — run requests in sequence using Postman Collection Runner.\n\n## Modes\n- **Demo mode** (BROADCASTER=mock): pools auto-seeded, /demo/build-proof available\n- **Live mode** (BROADCASTER=woc): real BSV transactions, client must build proofs\n\n## RACE-01 Fix\nConcurrent nonce reservations return 202 (nonce_pending) instead of allowing race conditions.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://localhost:8402",
+			"type": "string"
+		},
+		{
+			"key": "challengeEncoded",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "proofHeader",
+			"value": "",
+			"type": "string"
+		}
+	],
+	"item": [
+		{
+			"name": "Health & Status",
+			"description": "Server health checks and pool monitoring endpoints.",
+			"item": [
+				{
+					"name": "Health Check",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/health",
+							"host": ["{{baseUrl}}"],
+							"path": ["health"]
+						},
+						"description": "Returns server health, version, network, and all three UTXO pool statistics (nonce, fee, payment).\n\nExpected: 200 OK"
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status is 200', () => pm.response.to.have.status(200));",
+									"",
+									"pm.test('Health response shape is valid', () => {",
+									"    const body = pm.response.json();",
+									"    pm.expect(body.status).to.eql('ok');",
+									"    pm.expect(body.version).to.eql('1.0.0');",
+									"    pm.expect(body.network).to.be.oneOf(['testnet', 'mainnet']);",
+									"});",
+									"",
+									"pm.test('Pool stats are present', () => {",
+									"    const body = pm.response.json();",
+									"    pm.expect(body.nonce_pool).to.have.property('total');",
+									"    pm.expect(body.nonce_pool).to.have.property('available');",
+									"    pm.expect(body.nonce_pool).to.have.property('leased');",
+									"    pm.expect(body.nonce_pool).to.have.property('spent');",
+									"    pm.expect(body.fee_pool).to.have.property('available');",
+									"    pm.expect(body.payment_pool).to.have.property('available');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "API Health (Fee Delegator)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/health",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "health"]
+						},
+						"description": "Node.js-compatible health endpoint. Returns uptime and timestamp.\n\nExpected: 200 OK"
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status is 200', () => pm.response.to.have.status(200));",
+									"",
+									"pm.test('Health response is valid', () => {",
+									"    const body = pm.response.json();",
+									"    pm.expect(body.success).to.be.true;",
+									"    pm.expect(body.status).to.eql('ok');",
+									"    pm.expect(body.uptime).to.be.a('number');",
+									"    pm.expect(body.timestamp).to.be.a('number');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "UTXO Pool Stats",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/utxo/stats",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "utxo", "stats"]
+						},
+						"description": "Returns fee pool statistics and Redis enablement status.\n\nExpected: 200 OK"
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status is 200', () => pm.response.to.have.status(200));",
+									"",
+									"pm.test('Stats response is valid', () => {",
+									"    const body = pm.response.json();",
+									"    pm.expect(body.success).to.be.true;",
+									"    pm.expect(body).to.have.property('redisEnabled');",
+									"    pm.expect(body.stats).to.have.property('fee');",
+									"    pm.expect(body.stats.fee).to.have.property('total');",
+									"    pm.expect(body.stats.fee).to.have.property('available');",
+									"    pm.expect(body.stats.fee).to.have.property('leased');",
+									"    pm.expect(body.stats.fee).to.have.property('spent');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "UTXO Pool Health",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/utxo/health",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "utxo", "health"]
+						},
+						"description": "Returns pool health status (healthy/degraded) with per-pool breakdown.\n\nExpected: 200 OK"
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status is 200', () => pm.response.to.have.status(200));",
+									"",
+									"pm.test('Health response is valid', () => {",
+									"    const body = pm.response.json();",
+									"    pm.expect(body.success).to.be.true;",
+									"    pm.expect(body.status).to.be.oneOf(['healthy', 'degraded']);",
+									"    pm.expect(body.healthy).to.be.a('boolean');",
+									"    pm.expect(body.availableUtxos).to.be.a('number');",
+									"    pm.expect(body.poolHealth).to.have.property('fee');",
+									"    pm.expect(body.poolHealth.fee).to.have.property('healthy');",
+									"    pm.expect(body.poolHealth.fee).to.have.property('available');",
+									"    pm.expect(body.poolHealth.fee).to.have.property('total');",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "x402 Payment Flow",
+			"description": "Core x402 payment protocol flow.\n\n1. Request protected resource → get 402 challenge\n2. Build proof (demo mode) or delegate fee (live mode)\n3. Retry with proof → get 200\n4. Replay same proof → get 409",
+			"item": [
+				{
+					"name": "1. Request Protected Resource (GET → 402)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/v1/expensive",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "expensive"]
+						},
+						"description": "First request without payment proof. Returns HTTP 402 Payment Required with:\n- X402-Challenge header: base64-encoded JSON challenge\n- X402-Accept header: supported payment schemes\n- Cache-Control: no-store\n\nThe challenge contains: version, scheme, amount_sats (100), payee locking script, expiry, domain/method/path binding, nonce UTXO, and request hashes.\n\nExpected: 402 Payment Required"
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status is 402 Payment Required', () => {",
+									"    pm.response.to.have.status(402);",
+									"});",
+									"",
+									"pm.test('Has X402-Challenge header', () => {",
+									"    pm.expect(pm.response.headers.has('X402-Challenge')).to.be.true;",
+									"    const challenge = pm.response.headers.get('X402-Challenge');",
+									"    pm.expect(challenge).to.be.a('string').and.not.empty;",
+									"    pm.collectionVariables.set('challengeEncoded', challenge);",
+									"});",
+									"",
+									"pm.test('Has X402-Accept header with bsv-tx-v1', () => {",
+									"    pm.expect(pm.response.headers.has('X402-Accept')).to.be.true;",
+									"    const accept = pm.response.headers.get('X402-Accept');",
+									"    pm.expect(accept).to.include('bsv-tx-v1');",
+									"});",
+									"",
+									"pm.test('Has Cache-Control: no-store', () => {",
+									"    const cc = pm.response.headers.get('Cache-Control');",
+									"    pm.expect(cc).to.eql('no-store');",
+									"});",
+									"",
+									"pm.test('Response body has payment_required error', () => {",
+									"    const body = pm.response.json();",
+									"    pm.expect(body.code).to.eql('payment_required');",
+									"    pm.expect(body.status).to.eql(402);",
+									"});",
+									"",
+									"pm.test('Challenge decodes to valid JSON', () => {",
+									"    const challenge = pm.response.headers.get('X402-Challenge');",
+									"    const b64 = challenge.replace(/-/g, '+').replace(/_/g, '/');",
+									"    const decoded = JSON.parse(atob(b64));",
+									"    pm.expect(decoded.v).to.eql('1');",
+									"    pm.expect(decoded.scheme).to.eql('bsv-tx-v1');",
+									"    pm.expect(decoded.amount_sats).to.eql(100);",
+									"    pm.expect(decoded.nonce_utxo).to.have.property('txid');",
+									"    pm.expect(decoded.nonce_utxo).to.have.property('vout');",
+									"    pm.expect(decoded.nonce_utxo).to.have.property('satoshis');",
+									"    pm.expect(decoded.nonce_utxo).to.have.property('locking_script_hex');",
+									"    pm.expect(decoded.payee_locking_script_hex).to.be.a('string');",
+									"    pm.expect(decoded.expires_at).to.be.a('number');",
+									"    pm.expect(decoded.domain).to.include('localhost');",
+									"    pm.expect(decoded.method).to.eql('GET');",
+									"    pm.expect(decoded.path).to.eql('/v1/expensive');",
+									"    pm.expect(decoded.req_headers_sha256).to.be.a('string');",
+									"    pm.expect(decoded.req_body_sha256).to.be.a('string');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "1b. Request Protected Resource (POST → 402)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\"example\": \"payload\"}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/v1/expensive",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "expensive"]
+						},
+						"description": "POST variant of the protected endpoint. Same 402 challenge flow, but the challenge binding includes the request body SHA-256.\n\nExpected: 402 Payment Required"
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status is 402', () => pm.response.to.have.status(402));",
+									"",
+									"pm.test('Has X402-Challenge header', () => {",
+									"    pm.expect(pm.response.headers.has('X402-Challenge')).to.be.true;",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "2. Build Proof (Demo Mode)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"challenge\": \"{{challengeEncoded}}\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/demo/build-proof",
+							"host": ["{{baseUrl}}"],
+							"path": ["demo", "build-proof"]
+						},
+						"description": "Demo-only: builds a complete payment proof server-side.\n\nAccepts the base64-encoded challenge from X402-Challenge header. The server:\n1. Decodes the challenge\n2. Leases a nonce UTXO and payment UTXO\n3. Constructs a partial tx (nonce input + payment input + payee output)\n4. Signs client inputs with SIGHASH_ALL|ANYONECANPAY|FORKID (0xC1)\n5. Delegates to the delegator for fee input addition\n6. Returns a ready-to-use X402-Proof header value\n\nPrerequisite: Run step 1 first to capture challengeEncoded.\n\nExpected: 200 OK"
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status is 200', () => pm.response.to.have.status(200));",
+									"",
+									"pm.test('Proof response is valid', () => {",
+									"    const body = pm.response.json();",
+									"    pm.expect(body.proof_header).to.be.a('string').and.not.empty;",
+									"    pm.expect(body.txid).to.be.a('string').with.lengthOf(64);",
+									"    pm.expect(body.challenge_hash).to.be.a('string').with.lengthOf(64);",
+									"    pm.collectionVariables.set('proofHeader', body.proof_header);",
+									"    console.log('Proof TxID: ' + body.txid);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "3. Access with Proof (GET → 200)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X402-Proof",
+								"value": "{{proofHeader}}",
+								"description": "Base64-encoded payment proof"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/v1/expensive",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "expensive"]
+						},
+						"description": "Retry the protected resource with a valid X402-Proof header.\n\nThe gatekeeper validates the proof (version, scheme, binding, mempool acceptance, replay check), then grants access to the protected resource.\n\nPrerequisite: Run step 2 first to capture proofHeader.\n\nExpected: 200 OK"
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status is 200 OK', () => pm.response.to.have.status(200));",
+									"",
+									"pm.test('Received protected data', () => {",
+									"    const body = pm.response.json();",
+									"    pm.expect(body.data).to.include('100 satoshis');",
+									"    pm.expect(body.timestamp).to.be.a('number');",
+									"    pm.expect(body.path).to.eql('/v1/expensive');",
+									"    console.log('SUCCESS: ' + body.data);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "4. Replay Same Proof (GET → 409)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X402-Proof",
+								"value": "{{proofHeader}}",
+								"description": "Same proof from step 3 — should be rejected as double-spend"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/v1/expensive",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "expensive"]
+						},
+						"description": "Replay attack test: resubmit the same proof from step 3.\n\nThe gatekeeper's replay cache detects the nonce UTXO has already been spent and rejects with 409 Conflict (double_spend).\n\nThis proves:\n- Replay cache works correctly\n- Nonce UTXO single-use enforcement\n- RACE-01 fix prevents concurrent bypass\n\nPrerequisite: Step 3 must have succeeded.\n\nExpected: 409 Conflict"
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status is 409 Conflict (double_spend)', () => {",
+									"    pm.response.to.have.status(409);",
+									"});",
+									"",
+									"pm.test('Error code is double_spend', () => {",
+									"    const body = pm.response.json();",
+									"    pm.expect(body.code).to.eql('double_spend');",
+									"    pm.expect(body.message).to.be.a('string');",
+									"    console.log('Replay correctly rejected: ' + body.message);",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "Fee Delegation",
+			"description": "Direct fee delegation endpoints.\n\n- POST /delegate/x402 — canonical x402 spec flow (client-constructed partial tx)\n- POST /api/v1/tx — Node.js-compatible fee delegator (JSON tx structure)",
+			"item": [
+				{
+					"name": "Delegate x402 (Spec Flow)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"partial_tx_hex\": \"<hex-encoded-partial-transaction>\",\n    \"challenge_hash\": \"<sha256-of-challenge>\",\n    \"nonce_outpoint\": {\n        \"txid\": \"<nonce-utxo-txid>\",\n        \"vout\": 0\n    },\n    \"payee_locking_script_hex\": \"<payee-locking-script-hex>\",\n    \"amount_sats\": 100\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/delegate/x402",
+							"host": ["{{baseUrl}}"],
+							"path": ["delegate", "x402"]
+						},
+						"description": "Canonical x402 fee delegation endpoint.\n\nThe client builds a partial TX with:\n- Input 0: nonce UTXO (signed with 0xC1)\n- Input 1+: payment UTXO(s) (signed with 0xC1)\n- Output 0: payee payment\n\nThe server validates, adds fee inputs, signs those with 0xC1, and returns the completed tx.\n\nRequest fields:\n- partial_tx_hex: hex-encoded partial transaction\n- challenge_hash: SHA-256 of the original challenge\n- nonce_outpoint: {txid, vout} for replay cache\n- payee_locking_script_hex: expected payee (optional, server-side default)\n- amount_sats: minimum payment amount (optional)\n\nResponse on success:\n- txid: computed transaction ID\n- rawtx_hex: completed raw transaction hex\n- accepted: true\n\nExpected with placeholder data: 400 (invalid_proof)"
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const status = pm.response.code;",
+									"",
+									"pm.test('Returns delegation result or error', () => {",
+									"    const body = pm.response.json();",
+									"    if (status === 200) {",
+									"        pm.expect(body.txid).to.be.a('string').with.lengthOf(64);",
+									"        pm.expect(body.rawtx_hex).to.be.a('string');",
+									"        pm.expect(body.accepted).to.be.true;",
+									"    } else {",
+									"        pm.expect(body).to.have.property('code');",
+									"        pm.expect(body).to.have.property('message');",
+									"    }",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Delegate x402 — Missing nonce_outpoint",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"partial_tx_hex\": \"0100000001\",\n    \"challenge_hash\": \"abc123\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/delegate/x402",
+							"host": ["{{baseUrl}}"],
+							"path": ["delegate", "x402"]
+						},
+						"description": "Negative test: missing nonce_outpoint returns invalid_proof.\n\nExpected: 400"
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status is 400', () => {",
+									"    pm.expect(pm.response.code).to.be.within(400, 499);",
+									"});",
+									"",
+									"pm.test('Error code is invalid_proof', () => {",
+									"    const body = pm.response.json();",
+									"    pm.expect(body.code).to.eql('invalid_proof');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Delegate Fee (Node.js-Compatible)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"txJson\": {\n        \"inputs\": [\n            {\n                \"txid\": \"aabbccdd00112233445566778899aabbccddeeff00112233445566778899aabb\",\n                \"vout\": 0,\n                \"satoshis\": 1000,\n                \"scriptSig\": \"\"\n            }\n        ],\n        \"outputs\": [\n            {\n                \"satoshis\": 100,\n                \"script\": \"76a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba88ac\"\n            }\n        ]\n    }\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/tx",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "tx"]
+						},
+						"description": "Node.js-compatible fee delegation endpoint.\n\nAccepts a JSON transaction structure. The server:\n1. Validates inputs/outputs\n2. Calculates miner fee\n3. Leases fee UTXOs\n4. Adds fee inputs and signs with 0xC1\n5. Returns the completed transaction\n\nExpected with placeholder data: 400 or 500"
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const status = pm.response.code;",
+									"",
+									"pm.test('Returns delegation result or error', () => {",
+									"    const body = pm.response.json();",
+									"    if (status === 200) {",
+									"        pm.expect(body.success).to.be.true;",
+									"        pm.expect(body.txid).to.be.a('string');",
+									"        pm.expect(body.rawtx).to.be.a('string');",
+									"        pm.expect(body.fee).to.be.a('number');",
+									"        pm.expect(body.mode).to.eql('raw_transaction_returned');",
+									"    } else {",
+									"        pm.expect(body.success).to.be.false;",
+									"        pm.expect(body.error).to.be.a('string');",
+									"    }",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "Dashboard API",
+			"description": "React dashboard backend endpoints for configuration, statistics, and treasury management.",
+			"item": [
+				{
+					"name": "Config",
+					"item": [
+						{
+							"name": "Get Configuration",
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{baseUrl}}/api/v1/config",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "v1", "config"]
+								},
+								"description": "Returns the current server configuration (secrets redacted).\n\nIncludes network, port, broadcaster, fee rate, pool settings, key mode, and derived addresses.\n\nExpected: 200 OK"
+							},
+							"response": [],
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test('Status is 200', () => pm.response.to.have.status(200));",
+											"",
+											"pm.test('Config response is valid', () => {",
+											"    const body = pm.response.json();",
+											"    pm.expect(body.network).to.be.oneOf(['testnet', 'mainnet']);",
+											"    pm.expect(body.port).to.be.a('number');",
+											"    pm.expect(body.broadcaster).to.be.a('string');",
+											"    pm.expect(body.feeRate).to.be.a('number');",
+											"    pm.expect(body.keyMode).to.be.oneOf(['xpriv', 'wif']);",
+											"    pm.expect(body.nonceAddress).to.be.a('string');",
+											"    pm.expect(body.feeAddress).to.be.a('string');",
+											"    pm.expect(body.treasuryAddress).to.be.a('string');",
+											"    pm.expect(body.payeeAddress).to.be.a('string');",
+											"});"
+										]
+									}
+								}
+							]
+						},
+						{
+							"name": "Update Configuration",
+							"request": {
+								"method": "PUT",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"feeRate\": 0.005,\n    \"poolReplenishThreshold\": 200,\n    \"poolOptimalSize\": 3000\n}"
+								},
+								"url": {
+									"raw": "{{baseUrl}}/api/v1/config",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "v1", "config"]
+								},
+								"description": "Updates runtime-adjustable configuration.\n\nMutable fields:\n- feeRate: must be > 0\n- poolReplenishThreshold: must be >= 0\n- poolOptimalSize: must be >= 1\n\nAll fields are optional — only provided fields are updated.\n\nExpected: 200 OK"
+							},
+							"response": [],
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test('Status is 200', () => pm.response.to.have.status(200));",
+											"",
+											"pm.test('Update response is valid', () => {",
+											"    const body = pm.response.json();",
+											"    pm.expect(body.success).to.be.true;",
+											"    pm.expect(body.updated).to.be.an('object');",
+											"});"
+										]
+									}
+								}
+							]
+						},
+						{
+							"name": "Update Config — Invalid feeRate",
+							"request": {
+								"method": "PUT",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"feeRate\": -1\n}"
+								},
+								"url": {
+									"raw": "{{baseUrl}}/api/v1/config",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "v1", "config"]
+								},
+								"description": "Negative test: negative feeRate should return 400.\n\nExpected: 400"
+							},
+							"response": [],
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test('Status is 400', () => pm.response.to.have.status(400));",
+											"",
+											"pm.test('Error mentions feeRate', () => {",
+											"    const body = pm.response.json();",
+											"    pm.expect(body.error).to.include('feeRate');",
+											"});"
+										]
+									}
+								}
+							]
+						},
+						{
+							"name": "Update Config — Empty body",
+							"request": {
+								"method": "PUT",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{}"
+								},
+								"url": {
+									"raw": "{{baseUrl}}/api/v1/config",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "v1", "config"]
+								},
+								"description": "Negative test: empty body should return 400 (no fields to update).\n\nExpected: 400"
+							},
+							"response": [],
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test('Status is 400', () => pm.response.to.have.status(400));",
+											"",
+											"pm.test('Error message', () => {",
+											"    const body = pm.response.json();",
+											"    pm.expect(body.error).to.include('no fields to update');",
+											"});"
+										]
+									}
+								}
+							]
+						}
+					]
+				},
+				{
+					"name": "Statistics",
+					"item": [
+						{
+							"name": "Stats Summary",
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{baseUrl}}/api/v1/stats/summary",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "v1", "stats", "summary"]
+								},
+								"description": "Aggregate statistics over a 1-hour rolling window.\n\nIncludes total requests, payments, challenges, errors, average latency, total fees, and pool stats.\n\nExpected: 200 OK"
+							},
+							"response": [],
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test('Status is 200', () => pm.response.to.have.status(200));",
+											"",
+											"pm.test('Summary response is valid', () => {",
+											"    const body = pm.response.json();",
+											"    pm.expect(body.totalRequests).to.be.a('number');",
+											"    pm.expect(body.payments).to.be.a('number');",
+											"    pm.expect(body.challenges).to.be.a('number');",
+											"    pm.expect(body.errors).to.be.a('number');",
+											"    pm.expect(body.avgDurationMs).to.be.a('number');",
+											"    pm.expect(body.totalFeeSats).to.be.a('number');",
+											"    pm.expect(body.uptimeSeconds).to.be.a('number');",
+											"    pm.expect(body.noncePool).to.have.property('available');",
+											"    pm.expect(body.feePool).to.have.property('available');",
+											"});"
+										]
+									}
+								}
+							]
+						},
+						{
+							"name": "Stats Timeseries",
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{baseUrl}}/api/v1/stats/timeseries",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "v1", "stats", "timeseries"]
+								},
+								"description": "Time-series data for the last hour in 1-minute buckets.\n\nEach point contains: timestamp, requests, payments, errors.\n\nExpected: 200 OK"
+							},
+							"response": [],
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test('Status is 200', () => pm.response.to.have.status(200));",
+											"",
+											"pm.test('Timeseries response is valid', () => {",
+											"    const body = pm.response.json();",
+											"    pm.expect(body.points).to.be.an('array');",
+											"    pm.expect(body.bucketMs).to.be.a('number');",
+											"    if (body.points.length > 0) {",
+											"        pm.expect(body.points[0]).to.have.property('timestamp');",
+											"        pm.expect(body.points[0]).to.have.property('requests');",
+											"        pm.expect(body.points[0]).to.have.property('payments');",
+											"        pm.expect(body.points[0]).to.have.property('errors');",
+											"    }",
+											"});"
+										]
+									}
+								}
+							]
+						}
+					]
+				},
+				{
+					"name": "Treasury",
+					"item": [
+						{
+							"name": "Treasury Info",
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{baseUrl}}/api/v1/treasury/info",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "v1", "treasury", "info"]
+								},
+								"description": "Returns treasury address, network, key mode, derivation path, and pool stats.\n\nExpected: 200 OK"
+							},
+							"response": [],
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test('Status is 200', () => pm.response.to.have.status(200));",
+											"",
+											"pm.test('Treasury info is valid', () => {",
+											"    const body = pm.response.json();",
+											"    pm.expect(body.address).to.be.a('string');",
+											"    pm.expect(body.network).to.be.oneOf(['testnet', 'mainnet']);",
+											"    pm.expect(body.keyMode).to.be.oneOf(['xpriv', 'wif']);",
+											"    pm.expect(body.noncePool).to.have.property('available');",
+											"    pm.expect(body.feePool).to.have.property('available');",
+											"});"
+										]
+									}
+								}
+							]
+						},
+						{
+							"name": "Treasury UTXOs",
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{baseUrl}}/api/v1/treasury/utxos",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "v1", "treasury", "utxos"]
+								},
+								"description": "Returns treasury UTXO list from the watcher.\n\nExpected: 200 OK"
+							},
+							"response": [],
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test('Status is 200', () => pm.response.to.have.status(200));",
+											"",
+											"pm.test('Response has utxos array', () => {",
+											"    const body = pm.response.json();",
+											"    pm.expect(body.success).to.be.true;",
+											"    pm.expect(body.utxos).to.be.an('array');",
+											"});"
+										]
+									}
+								}
+							]
+						},
+						{
+							"name": "Treasury Fan-out",
+							"request": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"pool\": \"nonce\",\n    \"count\": 100,\n    \"fundingTxid\": \"<funding-utxo-txid>\",\n    \"fundingVout\": 0,\n    \"fundingScript\": \"<funding-utxo-locking-script-hex>\",\n    \"fundingSatoshis\": 10000\n}"
+								},
+								"url": {
+									"raw": "{{baseUrl}}/api/v1/treasury/fanout",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "v1", "treasury", "fanout"]
+								},
+								"description": "Splits a funding UTXO into multiple 1-sat UTXOs for the specified pool.\n\nParameters:\n- pool: \"nonce\" or \"fee\"\n- count: 1–10000\n- fundingTxid/fundingVout/fundingScript/fundingSatoshis: funding UTXO\n\nExpected with placeholder data: 400 or 500"
+							},
+							"response": [],
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"const status = pm.response.code;",
+											"",
+											"pm.test('Returns fanout result or error', () => {",
+											"    const body = pm.response.json();",
+											"    if (status === 200) {",
+											"        pm.expect(body.success).to.be.true;",
+											"        pm.expect(body.txid).to.be.a('string');",
+											"        pm.expect(body.utxoCount).to.be.a('number');",
+											"        pm.expect(body.pool).to.be.oneOf(['nonce', 'fee']);",
+											"    } else {",
+											"        pm.expect(body.error).to.be.a('string');",
+											"    }",
+											"});"
+										]
+									}
+								}
+							]
+						},
+						{
+							"name": "Treasury Fan-out — Invalid Pool",
+							"request": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"pool\": \"invalid\",\n    \"count\": 100,\n    \"fundingTxid\": \"abc123\",\n    \"fundingVout\": 0,\n    \"fundingScript\": \"76a914000088ac\",\n    \"fundingSatoshis\": 10000\n}"
+								},
+								"url": {
+									"raw": "{{baseUrl}}/api/v1/treasury/fanout",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "v1", "treasury", "fanout"]
+								},
+								"description": "Negative test: invalid pool name should return 400.\n\nExpected: 400"
+							},
+							"response": [],
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test('Status is 400', () => pm.response.to.have.status(400));",
+											"",
+											"pm.test('Error mentions pool', () => {",
+											"    const body = pm.response.json();",
+											"    pm.expect(body.error).to.include('pool');",
+											"});"
+										]
+									}
+								}
+							]
+						},
+						{
+							"name": "Treasury History",
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{baseUrl}}/api/v1/treasury/history",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "v1", "treasury", "history"]
+								},
+								"description": "Returns the last 100 fan-out operations with txid, pool, count, and timestamp.\n\nExpected: 200 OK"
+							},
+							"response": [],
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"type": "text/javascript",
+										"exec": [
+											"pm.test('Status is 200', () => pm.response.to.have.status(200));",
+											"",
+											"pm.test('History response is valid', () => {",
+											"    const body = pm.response.json();",
+											"    pm.expect(body.success).to.be.true;",
+											"    pm.expect(body.history).to.be.an('array');",
+											"});"
+										]
+									}
+								}
+							]
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "Demo Mode",
+			"description": "Endpoints only available when BROADCASTER=mock. Pools are auto-seeded with synthetic UTXOs.",
+			"item": [
+				{
+					"name": "Demo Info",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/demo/info",
+							"host": ["{{baseUrl}}"],
+							"path": ["demo", "info"]
+						},
+						"description": "Returns demo mode information: version, network, payee, pools, and price.\n\nOnly available when BROADCASTER=mock.\n\nExpected: 200 OK"
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status is 200', () => pm.response.to.have.status(200));",
+									"",
+									"pm.test('Demo info is valid', () => {",
+									"    const body = pm.response.json();",
+									"    pm.expect(body.mode).to.eql('demo');",
+									"    pm.expect(body.version).to.eql('1.0.0');",
+									"    pm.expect(body.network).to.be.a('string');",
+									"    pm.expect(body.payee).to.be.a('string');",
+									"    pm.expect(body.price_sats).to.eql(100);",
+									"    pm.expect(body.nonce_pool).to.have.property('available');",
+									"    pm.expect(body.fee_pool).to.have.property('available');",
+									"    pm.expect(body.payment_pool).to.have.property('available');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Demo Events (SSE)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Accept",
+								"value": "text/event-stream"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/demo/events",
+							"host": ["{{baseUrl}}"],
+							"path": ["demo", "events"]
+						},
+						"description": "Server-Sent Events stream (backward-compatible path).\n\nNote: Postman has limited SSE support. Test with:\ncurl -N http://localhost:8402/demo/events"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Events",
+			"description": "Real-time Server-Sent Events (SSE) stream.",
+			"item": [
+				{
+					"name": "Event Stream (SSE)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Accept",
+								"value": "text/event-stream"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/events/stream",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "events", "stream"]
+						},
+						"description": "Real-time SSE stream of gateway events (challenges, payments, delegations, errors).\n\nNote: Postman has limited SSE support. Test with:\ncurl -N http://localhost:8402/api/v1/events/stream"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Error Cases",
+			"description": "Negative tests to verify proper error handling across all endpoints.",
+			"item": [
+				{
+					"name": "Invalid Proof Header",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X402-Proof",
+								"value": "not-valid-base64"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/v1/expensive",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "expensive"]
+						},
+						"description": "Garbage X402-Proof header.\n\nExpected: 400 (invalid_proof)"
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status is 400', () => pm.response.to.have.status(400));",
+									"",
+									"pm.test('Error code is invalid_proof', () => {",
+									"    const body = pm.response.json();",
+									"    pm.expect(body.code).to.eql('invalid_proof');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Invalid Delegation Request",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\"invalid\": \"body\"}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/delegate/x402",
+							"host": ["{{baseUrl}}"],
+							"path": ["delegate", "x402"]
+						},
+						"description": "Invalid delegation request body.\n\nExpected: 400"
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Returns error', () => {",
+									"    pm.expect(pm.response.code).to.be.within(400, 599);",
+									"    const body = pm.response.json();",
+									"    pm.expect(body).to.have.property('code');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Invalid Fee Delegation (empty inputs)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"txJson\": {\n        \"inputs\": [],\n        \"outputs\": []\n    }\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/tx",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "tx"]
+						},
+						"description": "Empty inputs/outputs should return 400.\n\nExpected: 400"
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status is 400', () => pm.response.to.have.status(400));",
+									"",
+									"pm.test('Error response', () => {",
+									"    const body = pm.response.json();",
+									"    pm.expect(body.success).to.be.false;",
+									"    pm.expect(body.error).to.be.a('string');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Build Proof — Invalid Challenge",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"challenge\": \"not-a-valid-challenge\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/demo/build-proof",
+							"host": ["{{baseUrl}}"],
+							"path": ["demo", "build-proof"]
+						},
+						"description": "Invalid challenge should return 400.\n\nExpected: 400"
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status is 400', () => pm.response.to.have.status(400));",
+									"",
+									"pm.test('Error mentions decode', () => {",
+									"    const body = pm.response.json();",
+									"    pm.expect(body.error).to.include('decode');",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "Full Demo Flow (Run in Sequence)",
+			"description": "Run these requests IN ORDER using the Postman Collection Runner to execute the complete x402 payment flow end-to-end.\n\n1. Health check — verify server is up\n2. GET /v1/expensive → 402 (captures challenge into collection variable)\n3. POST /demo/build-proof → builds proof from challenge (captures proofHeader)\n4. GET /v1/expensive with X402-Proof → 200 (payment accepted)\n5. Replay same proof → 409 (double_spend — replay protection verified)\n6. Pool stats — verify UTXO consumption\n\nRequires: BROADCASTER=mock (demo mode)",
+			"item": [
+				{
+					"name": "Step 1: Verify Server Running",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/health",
+							"host": ["{{baseUrl}}"],
+							"path": ["health"]
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Server is running', () => {",
+									"    pm.response.to.have.status(200);",
+									"    const body = pm.response.json();",
+									"    pm.expect(body.status).to.eql('ok');",
+									"    console.log('Server OK — network: ' + body.network + ', version: ' + body.version);",
+									"    console.log('Nonce pool: ' + body.nonce_pool.available + ' available');",
+									"    console.log('Fee pool: ' + body.fee_pool.available + ' available');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Step 2: Get Challenge (402)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/v1/expensive",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "expensive"]
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Got 402 challenge', () => {",
+									"    pm.response.to.have.status(402);",
+									"    const challenge = pm.response.headers.get('X402-Challenge');",
+									"    pm.expect(challenge).to.be.a('string').and.not.empty;",
+									"    pm.collectionVariables.set('challengeEncoded', challenge);",
+									"    console.log('Challenge captured (' + challenge.length + ' chars)');",
+									"",
+									"    // Decode and log key fields",
+									"    const b64 = challenge.replace(/-/g, '+').replace(/_/g, '/');",
+									"    const decoded = JSON.parse(atob(b64));",
+									"    console.log('  amount: ' + decoded.amount_sats + ' sats');",
+									"    console.log('  nonce: ' + decoded.nonce_utxo.txid.substring(0, 16) + '...:' + decoded.nonce_utxo.vout);",
+									"    console.log('  expires: ' + new Date(decoded.expires_at * 1000).toISOString());",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Step 3: Build Proof",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"challenge\": \"{{challengeEncoded}}\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/demo/build-proof",
+							"host": ["{{baseUrl}}"],
+							"path": ["demo", "build-proof"]
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Proof built', () => {",
+									"    pm.response.to.have.status(200);",
+									"    const body = pm.response.json();",
+									"    pm.expect(body.proof_header).to.be.a('string').and.not.empty;",
+									"    pm.expect(body.txid).to.be.a('string').with.lengthOf(64);",
+									"    pm.expect(body.challenge_hash).to.be.a('string').with.lengthOf(64);",
+									"    pm.collectionVariables.set('proofHeader', body.proof_header);",
+									"    console.log('Proof TxID: ' + body.txid);",
+									"    console.log('Challenge hash: ' + body.challenge_hash.substring(0, 16) + '...');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Step 4: Access with Proof (200)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X402-Proof",
+								"value": "{{proofHeader}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/v1/expensive",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "expensive"]
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Got 200 — payment accepted', () => {",
+									"    pm.response.to.have.status(200);",
+									"    const body = pm.response.json();",
+									"    pm.expect(body.data).to.include('100 satoshis');",
+									"    pm.expect(body.path).to.eql('/v1/expensive');",
+									"    console.log('SUCCESS: ' + body.data);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Step 5: Replay Test (409)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X402-Proof",
+								"value": "{{proofHeader}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/v1/expensive",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "expensive"]
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Replay rejected with 409', () => {",
+									"    pm.response.to.have.status(409);",
+									"    const body = pm.response.json();",
+									"    pm.expect(body.code).to.eql('double_spend');",
+									"    console.log('REPLAY BLOCKED: ' + body.message);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Step 6: Pool Stats After Payment",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/health",
+							"host": ["{{baseUrl}}"],
+							"path": ["health"]
+						}
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Pools updated after payment', () => {",
+									"    pm.response.to.have.status(200);",
+									"    const body = pm.response.json();",
+									"    console.log('Nonce pool: ' + body.nonce_pool.available + ' avail, ' + body.nonce_pool.spent + ' spent');",
+									"    console.log('Fee pool: ' + body.fee_pool.available + ' avail, ' + body.fee_pool.spent + ' spent');",
+									"    console.log('Payment pool: ' + body.payment_pool.available + ' avail, ' + body.payment_pool.spent + ' spent');",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		}
+	]
+}

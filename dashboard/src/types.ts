@@ -51,6 +51,7 @@ export interface TimeseriesPoint {
 export interface TreasuryInfo {
   address: string
   network: string
+  broadcaster: string
   keyMode: string
   derivationPath: string
   noncePool: PoolStats

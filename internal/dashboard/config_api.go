@@ -3,6 +3,8 @@ package dashboard
 import (
 	"encoding/json"
 	"net/http"
+
+	"github.com/merkle-works/x402-gateway/internal/broadcast"
 )
 
 // ConfigResponse is the safe configuration response (no secret keys).
@@ -29,6 +31,7 @@ type ConfigUpdateRequest struct {
 	FeeRate                *float64 `json:"feeRate,omitempty"`
 	PoolReplenishThreshold *int     `json:"poolReplenishThreshold,omitempty"`
 	PoolOptimalSize        *int     `json:"poolOptimalSize,omitempty"`
+	Broadcaster            *string  `json:"broadcaster,omitempty"`
 }
 
 // handleGetConfig returns the current (safe) configuration.
@@ -42,7 +45,7 @@ func (d *DashboardAPI) handleGetConfig() http.HandlerFunc {
 		resp := ConfigResponse{
 			Network:                d.cfg.BSVNetwork,
 			Port:                   d.cfg.Port,
-			Broadcaster:            d.cfg.Broadcaster,
+			Broadcaster:            d.broadcaster.Mode(),
 			FeeRate:                d.cfg.FeeRate,
 			PoolReplenishThreshold: d.cfg.PoolReplenishThreshold,
 			PoolOptimalSize:        d.cfg.PoolOptimalSize,
@@ -105,6 +108,26 @@ func (d *DashboardAPI) handleUpdateConfig() http.HandlerFunc {
 			}
 			d.cfg.PoolOptimalSize = *req.PoolOptimalSize
 			updated["poolOptimalSize"] = d.cfg.PoolOptimalSize
+		}
+
+		if req.Broadcaster != nil {
+			newMode := *req.Broadcaster
+			if newMode != "mock" && newMode != "woc" {
+				writeJSON(w, http.StatusBadRequest, map[string]any{
+					"error": "broadcaster must be \"mock\" or \"woc\"",
+				})
+				return
+			}
+			if newMode != d.broadcaster.Mode() {
+				switch newMode {
+				case "woc":
+					d.broadcaster.Swap(broadcast.NewWoCBroadcaster(d.mainnet), "woc")
+				case "mock":
+					d.broadcaster.Swap(&broadcast.MockBroadcaster{}, "mock")
+				}
+				d.cfg.Broadcaster = newMode
+				updated["broadcaster"] = newMode
+			}
 		}
 
 		if len(updated) == 0 {

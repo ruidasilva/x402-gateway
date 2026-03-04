@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"time"
 
-	deleg "github.com/merkle-works/x402-gateway/internal/delegator"
+	"github.com/merkle-works/x402-gateway/internal/broadcast"
 	"github.com/merkle-works/x402-gateway/internal/pool"
 	"github.com/merkle-works/x402-gateway/internal/pricing"
 	"github.com/merkle-works/x402-gateway/internal/replay"
@@ -12,8 +12,9 @@ import (
 
 // Config configures the gatekeeper middleware.
 type Config struct {
-	// Delegator handles transaction finalization and broadcasting.
-	Delegator *deleg.Delegator
+	// MempoolChecker provides independent mempool verification (CRIT-04).
+	// If nil, mempool check is skipped (backwards compat).
+	MempoolChecker broadcast.MempoolChecker
 
 	// ReplayCache provides early replay detection at the gatekeeper layer.
 	// Defence-in-depth: the delegator also checks replay independently.
@@ -95,6 +96,8 @@ const (
 	ErrInsufficientAmount ErrorCode = "insufficient_amount"
 	ErrExpiredChallenge   ErrorCode = "expired_challenge"
 	ErrMempoolRejected    ErrorCode = "mempool_rejected"
+	ErrMempoolPending     ErrorCode = "payment_pending"
+	ErrMempoolError       ErrorCode = "mempool_check_error"
 	ErrInvalidBinding     ErrorCode = "invalid_binding"
 	ErrDoubleSpend        ErrorCode = "double_spend"
 	ErrInvalidProof       ErrorCode = "invalid_proof"
@@ -109,13 +112,15 @@ func HTTPStatusForError(code ErrorCode) int {
 	switch code {
 	case ErrInvalidVersion, ErrInvalidScheme, ErrInvalidProof, ErrChallengeNotFound, ErrNonceMissing:
 		return http.StatusBadRequest
-	case ErrExpiredChallenge, ErrMempoolRejected, ErrInsufficientAmount:
+	case ErrExpiredChallenge, ErrInsufficientAmount:
 		return http.StatusPaymentRequired
 	case ErrInvalidBinding, ErrInvalidPayee:
 		return http.StatusForbidden
-	case ErrDoubleSpend:
+	case ErrDoubleSpend, ErrMempoolRejected:
 		return http.StatusConflict
-	case ErrNoUTXOsAvailable:
+	case ErrMempoolPending:
+		return http.StatusAccepted
+	case ErrNoUTXOsAvailable, ErrMempoolError:
 		return http.StatusServiceUnavailable
 	default:
 		return http.StatusInternalServerError

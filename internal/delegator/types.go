@@ -1,10 +1,14 @@
 package delegator
 
-import "github.com/merkle-works/x402-gateway/internal/challenge"
-
 // DelegationRequest is the input to the delegator's Accept method.
-// The delegator builds the full transaction internally.
+// Per canonical spec: the client constructs and signs the partial transaction;
+// the delegator validates structure, adds fee inputs, and signs only those.
 type DelegationRequest struct {
+	// PartialTxHex is the hex-encoded partial transaction constructed by the client.
+	// It must contain: nonce input (signed with 0xC1), payment input(s) (signed with 0xC1),
+	// and payee output. The delegator will append fee inputs and sign them.
+	PartialTxHex string `json:"partial_tx_hex"`
+
 	// ChallengeHash is the SHA-256 of the original challenge.
 	ChallengeHash string `json:"challenge_hash"`
 
@@ -14,13 +18,22 @@ type DelegationRequest struct {
 	// ExpectedAmount is the minimum expected payment amount.
 	ExpectedAmount int64 `json:"amount_sats,omitempty"`
 
-	// NonceUTXO is the nonce UTXO from the challenge that must be spent.
-	// The delegator adds this as input 0 and signs with the nonce key.
-	NonceUTXO *challenge.NonceRef `json:"nonce_utxo,omitempty"`
+	// NonceOutpoint identifies the nonce UTXO that must appear as an input
+	// in the partial transaction. Used for replay cache lookup only.
+	NonceOutpoint *NonceOutpointRef `json:"nonce_outpoint,omitempty"`
+}
+
+// NonceOutpointRef identifies a nonce UTXO by its outpoint (txid:vout).
+// Unlike challenge.NonceRef, this carries only the outpoint — no satoshis
+// or locking script, since those are already embedded in the partial tx.
+type NonceOutpointRef struct {
+	TxID string `json:"txid"`
+	Vout uint32 `json:"vout"`
 }
 
 // DelegationResult is returned after successful delegation.
 // The client uses txid + rawtx to build the proof for the gatekeeper.
+// Per spec: the client is responsible for broadcasting.
 type DelegationResult struct {
 	TxID     string `json:"txid"`
 	RawTxHex string `json:"rawtx_hex"`
@@ -42,6 +55,8 @@ func (e *DelegationError) Error() string {
 var (
 	// 400 — malformed request
 	ErrInvalidProof      = &DelegationError{Code: "invalid_proof", Message: "invalid transaction", Status: 400}
+	ErrInvalidPartialTx  = &DelegationError{Code: "invalid_partial_tx", Message: "invalid partial transaction", Status: 400}
+	ErrInvalidSighash    = &DelegationError{Code: "invalid_sighash", Message: "client input does not use required sighash flag 0xC1", Status: 400}
 	ErrUnexpectedOutputs = &DelegationError{Code: "invalid_proof", Message: "unexpected transaction outputs", Status: 400}
 
 	// 402 — payment problems (client must fix and retry)
@@ -54,11 +69,11 @@ var (
 	ErrInvalidVersion = &DelegationError{Code: "invalid_version", Message: "challenge version does not match expected", Status: 400}
 	ErrInvalidScheme  = &DelegationError{Code: "invalid_scheme", Message: "challenge scheme does not match expected", Status: 400}
 
+	// 202 — nonce reservation in flight (concurrent request is processing)
+	ErrNoncePending = &DelegationError{Code: "nonce_pending", Message: "nonce is being processed by another request", Status: 202}
+
 	// 409 — replay / double-spend
 	ErrDoubleSpend = &DelegationError{Code: "double_spend", Message: "challenge has already been settled", Status: 409}
-
-	// 500 — server errors
-	ErrMempoolRejected = &DelegationError{Code: "mempool_rejected", Message: "transaction broadcast failed", Status: 500}
 
 	// 503 — resource exhaustion
 	ErrNoUTXOAvailable = &DelegationError{Code: "no_utxos_available", Message: "no UTXOs available for delegation", Status: 503}

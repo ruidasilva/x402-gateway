@@ -134,3 +134,254 @@ func TestSize(t *testing.T) {
 		t.Errorf("expected size 1, got %d", cache.Size())
 	}
 }
+
+// ── TryReserve / Commit / Release tests ──
+
+func TestTryReserveBasic(t *testing.T) {
+	cache := New(5*time.Minute, 100)
+
+	nonce := strings.Repeat("a", 64)
+	ch := strings.Repeat("c", 64)
+
+	// First reservation succeeds
+	reserved, existingTxID, pending := cache.TryReserve(nonce, 0, ch)
+	if !reserved || existingTxID != "" || pending {
+		t.Fatalf("TryReserve: got (%v, %q, %v), want (true, \"\", false)", reserved, existingTxID, pending)
+	}
+
+	// Pending entry is invisible to Check
+	_, _, found := cache.Check(nonce, 0)
+	if found {
+		t.Error("Check should not see pending entries")
+	}
+
+	// Second reservation for same outpoint returns pending
+	reserved2, _, pending2 := cache.TryReserve(nonce, 0, ch)
+	if reserved2 || !pending2 {
+		t.Fatalf("second TryReserve: got (%v, _, %v), want (false, _, true)", reserved2, pending2)
+	}
+
+	// Different vout still works
+	reserved3, _, _ := cache.TryReserve(nonce, 1, ch)
+	if !reserved3 {
+		t.Error("TryReserve on different vout should succeed")
+	}
+}
+
+func TestTryReserveAfterCommitted(t *testing.T) {
+	cache := New(5*time.Minute, 100)
+
+	nonce := strings.Repeat("a", 64)
+	ch := strings.Repeat("c", 64)
+	spend := strings.Repeat("b", 64)
+
+	// Record a committed entry directly
+	cache.Record(nonce, 0, spend, ch)
+
+	// TryReserve should fail with existing txid
+	reserved, existingTxID, pending := cache.TryReserve(nonce, 0, ch)
+	if reserved || pending {
+		t.Fatalf("TryReserve on committed: got (%v, _, %v), want (false, _, false)", reserved, pending)
+	}
+	if existingTxID != spend {
+		t.Errorf("existingTxID: got %q, want %q", existingTxID, spend)
+	}
+}
+
+func TestTryReserveExpiredEntry(t *testing.T) {
+	cache := New(1*time.Millisecond, 100)
+
+	nonce := strings.Repeat("a", 64)
+	ch := strings.Repeat("c", 64)
+
+	// Record and let it expire
+	cache.Record(nonce, 0, "spend1", ch)
+	time.Sleep(5 * time.Millisecond)
+
+	// TryReserve should succeed because entry is expired
+	reserved, _, _ := cache.TryReserve(nonce, 0, ch)
+	if !reserved {
+		t.Error("TryReserve should succeed on expired entry")
+	}
+}
+
+func TestCommitSuccess(t *testing.T) {
+	cache := New(5*time.Minute, 100)
+
+	nonce := strings.Repeat("a", 64)
+	ch := strings.Repeat("c", 64)
+	spend := strings.Repeat("b", 64)
+
+	// Reserve
+	reserved, _, _ := cache.TryReserve(nonce, 0, ch)
+	if !reserved {
+		t.Fatal("TryReserve failed")
+	}
+
+	// Commit
+	if err := cache.Commit(nonce, 0, ch, spend); err != nil {
+		t.Fatalf("Commit failed: %v", err)
+	}
+
+	// Now Check should see it
+	resultTxID, resultHash, found := cache.Check(nonce, 0)
+	if !found {
+		t.Fatal("Check should find committed entry")
+	}
+	if resultTxID != spend {
+		t.Errorf("spendTxID: got %q, want %q", resultTxID, spend)
+	}
+	if resultHash != ch {
+		t.Errorf("challengeHash: got %q, want %q", resultHash, ch)
+	}
+}
+
+func TestCommitFailures(t *testing.T) {
+	cache := New(5*time.Minute, 100)
+
+	nonce := strings.Repeat("a", 64)
+	ch := strings.Repeat("c", 64)
+	spend := strings.Repeat("b", 64)
+
+	// Commit on absent entry
+	if err := cache.Commit(nonce, 0, ch, spend); err == nil {
+		t.Error("Commit on absent entry should fail")
+	}
+
+	// Reserve then commit
+	cache.TryReserve(nonce, 0, ch)
+	if err := cache.Commit(nonce, 0, ch, spend); err != nil {
+		t.Fatalf("first Commit failed: %v", err)
+	}
+
+	// Double commit
+	if err := cache.Commit(nonce, 0, ch, spend); err == nil {
+		t.Error("double Commit should fail")
+	}
+
+	// Commit with wrong challengeHash
+	nonce2 := strings.Repeat("d", 64)
+	cache.TryReserve(nonce2, 0, ch)
+	if err := cache.Commit(nonce2, 0, "wrong_hash", spend); err == nil {
+		t.Error("Commit with mismatched challengeHash should fail")
+	}
+}
+
+func TestReleaseSuccess(t *testing.T) {
+	cache := New(5*time.Minute, 100)
+
+	nonce := strings.Repeat("a", 64)
+	ch := strings.Repeat("c", 64)
+
+	// Reserve
+	cache.TryReserve(nonce, 0, ch)
+	if cache.Size() != 1 {
+		t.Fatalf("expected size 1 after reserve, got %d", cache.Size())
+	}
+
+	// Release
+	cache.Release(nonce, 0, ch)
+	if cache.Size() != 0 {
+		t.Fatalf("expected size 0 after release, got %d", cache.Size())
+	}
+
+	// Can reserve again after release
+	reserved, _, _ := cache.TryReserve(nonce, 0, ch)
+	if !reserved {
+		t.Error("TryReserve should succeed after Release")
+	}
+}
+
+func TestReleaseDoesNotDeleteCommitted(t *testing.T) {
+	cache := New(5*time.Minute, 100)
+
+	nonce := strings.Repeat("a", 64)
+	ch := strings.Repeat("c", 64)
+	spend := strings.Repeat("b", 64)
+
+	// Reserve + Commit
+	cache.TryReserve(nonce, 0, ch)
+	cache.Commit(nonce, 0, ch, spend)
+
+	// Release should be a no-op on committed entry
+	cache.Release(nonce, 0, ch)
+
+	// Entry should still be visible
+	_, _, found := cache.Check(nonce, 0)
+	if !found {
+		t.Error("Release should not delete committed entries")
+	}
+}
+
+func TestReleaseWrongChallengeHash(t *testing.T) {
+	cache := New(5*time.Minute, 100)
+
+	nonce := strings.Repeat("a", 64)
+	ch := strings.Repeat("c", 64)
+
+	// Reserve
+	cache.TryReserve(nonce, 0, ch)
+
+	// Release with wrong challengeHash — should be a no-op
+	cache.Release(nonce, 0, "wrong_hash")
+	if cache.Size() != 1 {
+		t.Error("Release with wrong challengeHash should not delete entry")
+	}
+
+	// Release with correct challengeHash — should work
+	cache.Release(nonce, 0, ch)
+	if cache.Size() != 0 {
+		t.Error("Release with correct challengeHash should delete entry")
+	}
+}
+
+func TestCheckInvisibleForPending(t *testing.T) {
+	cache := New(5*time.Minute, 100)
+
+	nonce := strings.Repeat("a", 64)
+	ch := strings.Repeat("c", 64)
+
+	// Reserve creates a pending entry
+	cache.TryReserve(nonce, 0, ch)
+
+	// Check must NOT see it (gatekeeper compatibility)
+	_, _, found := cache.Check(nonce, 0)
+	if found {
+		t.Error("Check must not return pending entries")
+	}
+
+	// Commit makes it visible
+	cache.Commit(nonce, 0, ch, "txid123")
+	_, _, found = cache.Check(nonce, 0)
+	if !found {
+		t.Error("Check should see committed entries")
+	}
+}
+
+func TestConcurrentTryReserve(t *testing.T) {
+	cache := New(5*time.Minute, 100)
+
+	nonce := strings.Repeat("a", 64)
+	ch := strings.Repeat("c", 64)
+
+	const goroutines = 50
+	results := make(chan bool, goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			reserved, _, _ := cache.TryReserve(nonce, 0, ch)
+			results <- reserved
+		}()
+	}
+
+	reservedCount := 0
+	for i := 0; i < goroutines; i++ {
+		if <-results {
+			reservedCount++
+		}
+	}
+
+	if reservedCount != 1 {
+		t.Errorf("exactly 1 goroutine should succeed, got %d", reservedCount)
+	}
+}

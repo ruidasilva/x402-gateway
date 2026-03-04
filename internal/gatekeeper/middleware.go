@@ -2,6 +2,7 @@ package gatekeeper
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -27,13 +28,16 @@ const (
 
 	// ReceiptHeader is the HTTP header carrying the payment receipt (per spec).
 	ReceiptHeader = "X402-Receipt"
+
+	// StatusHeader carries the mempool acceptance status (per spec).
+	StatusHeader = "X402-Status"
 )
 
 // Middleware returns an http.Handler middleware that gates access behind x402 payment.
 //
 // Flow:
 //  1. If no X402-Proof header → build challenge, return 402
-//  2. If X402-Proof present → parse proof, verify tx structure, verify binding, gate response
+//  2. If X402-Proof present → parse proof, verify tx structure, verify binding, check mempool, gate response
 func Middleware(cfg Config) func(http.Handler) http.Handler {
 	logger := slog.Default().With("component", "gatekeeper")
 
@@ -179,9 +183,9 @@ func handleProof(w http.ResponseWriter, r *http.Request, next http.Handler, proo
 		return
 	}
 
-	// Step 4: Compute txid and compare to proof.txid
+	// Step 4: Compute txid and compare to proof.txid (constant-time)
 	computedTxID := tx.TxID().String()
-	if proof.TxID != "" && proof.TxID != computedTxID {
+	if proof.TxID != "" && !constantTimeEqual(proof.TxID, computedTxID) {
 		writeError(w, HTTPStatusForError(ErrInvalidProof), string(ErrInvalidProof),
 			fmt.Sprintf("txid mismatch: proof=%s, computed=%s", proof.TxID, computedTxID))
 		return
@@ -199,18 +203,60 @@ func handleProof(w http.ResponseWriter, r *http.Request, next http.Handler, proo
 		originalChallenge = cfg.ChallengeCache.Lookup(proof.ChallengeSHA256)
 	}
 
-	// Step 7: Replay check using nonce outpoint from the challenge
+	// Step 7: Replay check using nonce outpoint from the challenge (constant-time)
 	if cfg.ReplayCache != nil && originalChallenge != nil && originalChallenge.NonceUTXO != nil {
 		nonce := originalChallenge.NonceUTXO
 		if existingTxID, _, found := cfg.ReplayCache.Check(nonce.TxID, nonce.Vout); found {
-			if existingTxID == computedTxID {
-				// Same tx — idempotent re-serve (the nonce was already spent by this tx)
+			if constantTimeEqual(existingTxID, computedTxID) {
+				// Same tx — idempotent re-serve, but must still enforce mempool
+				// semantics when require_mempool_accept is true.
 				logger.Info("idempotent re-serve",
 					"txid", computedTxID,
 					"nonce", fmt.Sprintf("%s:%d", nonce.TxID, nonce.Vout),
 				)
 				receiptHash := computeReceiptHash(computedTxID, proof.ChallengeSHA256)
 				w.Header().Set(ReceiptHeader, receiptHash)
+				w.Header().Set("X402-Receipt-Time", time.Now().UTC().Format(time.RFC3339))
+
+				if originalChallenge.RequireMempoolAccept {
+					if cfg.MempoolChecker == nil {
+						logger.Error("require_mempool_accept but no MempoolChecker configured", "txid", computedTxID)
+						w.Header().Set(StatusHeader, "error")
+						writeError(w, HTTPStatusForError(ErrMempoolError), string(ErrMempoolError),
+							"mempool verification required but not configured")
+						return
+					}
+					visible, doubleSpend, mErr := cfg.MempoolChecker.CheckMempool(computedTxID)
+					if mErr != nil {
+						logger.Error("mempool check failed on re-serve", "txid", computedTxID, "error", mErr)
+						w.Header().Set(StatusHeader, "error")
+						writeError(w, HTTPStatusForError(ErrMempoolError), string(ErrMempoolError),
+							fmt.Sprintf("mempool verification failed: %s", mErr))
+						return
+					}
+					if doubleSpend {
+						logger.Warn("mempool double-spend on re-serve", "txid", computedTxID)
+						w.Header().Set(StatusHeader, "rejected")
+						writeError(w, HTTPStatusForError(ErrDoubleSpend), string(ErrDoubleSpend),
+							"transaction rejected by mempool as double-spend")
+						return
+					}
+					if !visible {
+						logger.Info("re-serve: payment pending (not yet in mempool)", "txid", computedTxID)
+						w.Header().Set(StatusHeader, "pending")
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(http.StatusAccepted)
+						json.NewEncoder(w).Encode(map[string]any{
+							"status":  202,
+							"code":    string(ErrMempoolPending),
+							"message": "transaction not yet visible in mempool",
+							"txid":    computedTxID,
+						})
+						return
+					}
+				}
+
+				w.Header().Set(StatusHeader, "accepted")
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -220,6 +266,7 @@ func handleProof(w http.ResponseWriter, r *http.Request, next http.Handler, proo
 				"existing_txid", existingTxID,
 				"proof_txid", computedTxID,
 			)
+			w.Header().Set(StatusHeader, "rejected")
 			writeError(w, HTTPStatusForError(ErrDoubleSpend), string(ErrDoubleSpend),
 				fmt.Sprintf("nonce already spent in tx %s", existingTxID))
 			return
@@ -289,9 +336,63 @@ func handleProof(w http.ResponseWriter, r *http.Request, next http.Handler, proo
 		cfg.ReplayCache.Record(nonce.TxID, nonce.Vout, computedTxID, proof.ChallengeSHA256)
 	}
 
-	// Success — add receipt header and pass through to the protected handler
+	// Step 16: Mempool acceptance matrix (CRIT-04)
+	// Per Protocol-Spec:
+	//   200 = mempool-visible → serve protected response
+	//   202 = pending (not visible yet) → do NOT serve
+	//   409 = explicit double-spend → do NOT serve
+	//   503 = checker error → do NOT serve
 	receiptHash := computeReceiptHash(computedTxID, proof.ChallengeSHA256)
 	w.Header().Set(ReceiptHeader, receiptHash)
+	w.Header().Set("X402-Receipt-Time", time.Now().UTC().Format(time.RFC3339))
+
+	if originalChallenge.RequireMempoolAccept && cfg.MempoolChecker == nil {
+		// Hard failure: challenge requires mempool verification but no checker configured
+		logger.Error("require_mempool_accept but no MempoolChecker configured", "txid", computedTxID)
+		w.Header().Set(StatusHeader, "error")
+		writeError(w, HTTPStatusForError(ErrMempoolError), string(ErrMempoolError),
+			"mempool verification required but not configured")
+		return
+	}
+
+	if cfg.MempoolChecker != nil && originalChallenge.RequireMempoolAccept {
+		visible, doubleSpend, err := cfg.MempoolChecker.CheckMempool(computedTxID)
+		if err != nil {
+			// 503 — mempool check failed
+			logger.Error("mempool check failed", "txid", computedTxID, "error", err)
+			w.Header().Set(StatusHeader, "error")
+			writeError(w, HTTPStatusForError(ErrMempoolError), string(ErrMempoolError),
+				fmt.Sprintf("mempool verification failed: %s", err))
+			return
+		}
+
+		if doubleSpend {
+			// 409 — explicit double-spend detected
+			logger.Warn("mempool double-spend detected", "txid", computedTxID)
+			w.Header().Set(StatusHeader, "rejected")
+			writeError(w, HTTPStatusForError(ErrDoubleSpend), string(ErrDoubleSpend),
+				"transaction rejected by mempool as double-spend")
+			return
+		}
+
+		if !visible {
+			// 202 — tx not yet visible, payment acknowledged but not confirmed
+			logger.Info("payment pending (not yet in mempool)", "txid", computedTxID)
+			w.Header().Set(StatusHeader, "pending")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			json.NewEncoder(w).Encode(map[string]any{
+				"status":  202,
+				"code":    string(ErrMempoolPending),
+				"message": "transaction not yet visible in mempool",
+				"txid":    computedTxID,
+			})
+			return
+		}
+
+		// 200 — tx visible in mempool, serve protected response
+		w.Header().Set(StatusHeader, "accepted")
+	}
 
 	logger.Info("payment accepted",
 		"txid", computedTxID,
@@ -306,13 +407,14 @@ func handleProof(w http.ResponseWriter, r *http.Request, next http.Handler, proo
 // verifyNonceSpend checks that the transaction spends the nonce UTXO
 // specified in the challenge. This is the core replay protection mechanism:
 // Bitcoin consensus guarantees that an outpoint can only be spent once.
+// Uses constant-time comparison for txid.
 func verifyNonceSpend(tx *transaction.Transaction, nonce *challenge.NonceRef) error {
 	if nonce == nil {
 		return fmt.Errorf("challenge has no nonce_utxo")
 	}
 	for _, input := range tx.Inputs {
 		if input.SourceTXID != nil &&
-			input.SourceTXID.String() == nonce.TxID &&
+			constantTimeEqual(input.SourceTXID.String(), nonce.TxID) &&
 			input.SourceTxOutIndex == nonce.Vout {
 			return nil // found the nonce input
 		}
@@ -322,14 +424,20 @@ func verifyNonceSpend(tx *transaction.Transaction, nonce *challenge.NonceRef) er
 
 // verifyPayeeOutput checks that the transaction has at least one output
 // paying >= minAmount to the expected payee locking script.
+// Uses constant-time comparison for script hex.
 func verifyPayeeOutput(tx *transaction.Transaction, expectedScriptHex string, minAmount int64) error {
 	for _, out := range tx.Outputs {
 		scriptHex := hex.EncodeToString(*out.LockingScript)
-		if scriptHex == expectedScriptHex && int64(out.Satoshis) >= minAmount {
+		if constantTimeEqual(scriptHex, expectedScriptHex) && int64(out.Satoshis) >= minAmount {
 			return nil // found valid payee output
 		}
 	}
 	return fmt.Errorf("no output paying >= %d sats to expected payee", minAmount)
+}
+
+// constantTimeEqual compares two strings in constant time to prevent timing attacks.
+func constantTimeEqual(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
 func nonceRefString(n *challenge.NonceRef) string {
@@ -340,12 +448,8 @@ func nonceRefString(n *challenge.NonceRef) string {
 }
 
 func computeReceiptHash(txid, challengeHash string) string {
-	h := sha256.Sum256([]byte(txid + ":" + challengeHash + ":" + timeNowString()))
+	h := sha256.Sum256([]byte(txid + ":" + challengeHash))
 	return hex.EncodeToString(h[:])
-}
-
-func timeNowString() string {
-	return time.Now().UTC().Format(time.RFC3339)
 }
 
 func writeError(w http.ResponseWriter, status int, code, message string) {

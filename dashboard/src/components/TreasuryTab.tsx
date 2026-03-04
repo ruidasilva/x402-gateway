@@ -67,8 +67,23 @@ export default function TreasuryTab() {
     return `${sats.toLocaleString()} sats`
   }
 
+  function wocBase(): string {
+    return info?.network === 'testnet'
+      ? 'https://test.whatsonchain.com'
+      : 'https://whatsonchain.com'
+  }
+
+  function txUrl(txid: string): string {
+    return `${wocBase()}/tx/${txid}`
+  }
+
+  function addressUrl(addr: string): string {
+    return `${wocBase()}/address/${addr}`
+  }
+
   if (!info) return <div className="spinner" />
 
+  const demoMode = info.broadcaster === 'mock'
   const utxos = utxoData?.utxos ?? []
   const hasUTXOs = utxos.length > 0
 
@@ -81,18 +96,48 @@ export default function TreasuryTab() {
       {/* Treasury address */}
       <div className="card">
         <div className="card-header">
-          <span className="card-title">Treasury Address</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span className="card-title">Treasury Address</span>
+            {demoMode && (
+              <span
+                style={{
+                  fontSize: 10,
+                  fontWeight: 600,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em',
+                  padding: '2px 6px',
+                  borderRadius: 4,
+                  background: 'rgba(245, 158, 11, 0.15)',
+                  color: '#f59e0b',
+                  border: '1px solid rgba(245, 158, 11, 0.3)',
+                }}
+                title="Transactions are not broadcast to the network. Switch broadcaster in Settings."
+              >
+                Demo Mode
+              </span>
+            )}
+          </div>
           <span className="card-subtitle">{info.network} | {info.keyMode === 'xpriv' ? info.derivationPath : 'single key'}</span>
         </div>
-        <div style={{ marginBottom: 12 }}>
-          <span
-            className="copy-text"
-            onClick={() => copyToClipboard(info.address)}
-            title="Click to copy"
-            style={{ fontSize: 15 }}
+        <div style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <a
+            href={addressUrl(info.address)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="addr"
+            style={{ fontSize: 15, color: 'var(--accent-blue)', textDecoration: 'none' }}
+            title="View on WhatsonChain"
           >
-            <span className="addr">{info.address}</span>
-          </span>
+            {info.address}
+          </a>
+          <button
+            className="btn btn-sm"
+            style={{ fontSize: 11, padding: '2px 8px' }}
+            onClick={() => copyToClipboard(info.address)}
+            title="Copy to clipboard"
+          >
+            Copy
+          </button>
         </div>
         <div className="alert alert-info">
           Fund this address to create new UTXOs via fan-out. Each fan-out splits one funding UTXO into many small UTXOs for pool replenishment.
@@ -142,7 +187,16 @@ export default function TreasuryTab() {
                     onClick={() => selectUTXO(utxo)}
                   >
                     <td style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>
-                      {utxo.txid.slice(0, 16)}...
+                      <a
+                        href={txUrl(utxo.txid)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        style={{ color: 'var(--accent-blue)', textDecoration: 'none' }}
+                        title={demoMode ? `${utxo.txid} (demo — may not exist on-chain)` : utxo.txid}
+                      >
+                        {utxo.txid.slice(0, 16)}...
+                      </a>
                     </td>
                     <td>{utxo.vout}</td>
                     <td>{formatSats(utxo.satoshis)}</td>
@@ -295,7 +349,17 @@ export default function TreasuryTab() {
             <tbody>
               {historyData.history.map((entry, i) => (
                 <tr key={i}>
-                  <td style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{entry.txid.slice(0, 16)}...</td>
+                  <td style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>
+                    <a
+                      href={txUrl(entry.txid)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ color: 'var(--accent-blue)', textDecoration: 'none' }}
+                      title={demoMode ? `${entry.txid} (demo — may not exist on-chain)` : entry.txid}
+                    >
+                      {entry.txid.slice(0, 16)}...
+                    </a>
+                  </td>
                   <td>{entry.pool}</td>
                   <td>{entry.count}</td>
                   <td>{new Date(entry.timestamp).toLocaleString()}</td>

@@ -15,6 +15,7 @@ import (
 type TreasuryInfoResponse struct {
 	Address        string `json:"address"`
 	Network        string `json:"network"`
+	Broadcaster    string `json:"broadcaster"`
 	KeyMode        string `json:"keyMode"` // "xpriv" or "wif"
 	DerivationPath string `json:"derivationPath,omitempty"`
 	NoncePool      any    `json:"noncePool"`
@@ -138,6 +139,7 @@ func (d *DashboardAPI) handleTreasuryInfo() http.HandlerFunc {
 		resp := TreasuryInfoResponse{
 			Address:        d.keys.TreasuryAddress,
 			Network:        d.cfg.BSVNetwork,
+			Broadcaster:    d.broadcaster.Mode(),
 			KeyMode:        keyMode,
 			DerivationPath: derivationPath,
 			NoncePool:      d.noncePool.Stats(),

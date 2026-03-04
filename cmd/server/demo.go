@@ -5,10 +5,15 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
+	"github.com/bsv-blockchain/go-sdk/script"
+	"github.com/bsv-blockchain/go-sdk/transaction"
+	sighash "github.com/bsv-blockchain/go-sdk/transaction/sighash"
+	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 
 	"github.com/merkle-works/x402-gateway/internal/challenge"
 	"github.com/merkle-works/x402-gateway/internal/config"
@@ -16,6 +21,10 @@ import (
 	"github.com/merkle-works/x402-gateway/internal/gatekeeper"
 	"github.com/merkle-works/x402-gateway/internal/pool"
 )
+
+// x402ClientSigHash is SIGHASH_ALL | ANYONECANPAY | FORKID = 0xC1.
+// Client inputs must use this flag so the delegator can append fee inputs.
+var x402ClientSigHash = sighash.Flag(sighash.AllForkID | sighash.AnyOneCanPay)
 
 // seedDemoPools populates nonce, fee, and payment pools with synthetic UTXOs so
 // the full 402 → proof → 200 flow works locally without any blockchain.
@@ -117,14 +126,23 @@ type buildProofResponse struct {
 	ChallengeHash string `json:"challenge_hash"` // for display
 }
 
+// demoClientDeps holds the client-side keys and pools needed by the demo
+// handler to construct partial transactions (acting AS the client).
+type demoClientDeps struct {
+	nonceKey    *ec.PrivateKey
+	paymentKey  *ec.PrivateKey
+	noncePool   pool.Pool
+	paymentPool pool.Pool
+}
+
 // handleBuildProof builds a complete proof server-side so the dashboard
-// doesn't need BSV crypto. This endpoint:
+// doesn't need BSV crypto. Per canonical spec, this endpoint:
 //  1. Decodes the challenge
-//  2. Calls the delegator to build the full transaction, sign, and broadcast
-//  3. Builds a spec-compliant proof with the completed transaction
-func handleBuildProof(key *ec.PrivateKey, mainnet bool, deleg *delegator.Delegator, payeeLockingScriptHex string) http.HandlerFunc {
-	_ = key     // reserved for future client-signing support
-	_ = mainnet // reserved for future address derivation
+//  2. Constructs a partial tx (nonce input + payment input + payee output)
+//  3. Signs the client inputs with 0xC1 sighash
+//  4. Sends the partial tx to the delegator for fee addition
+//  5. Builds a spec-compliant proof with the completed transaction
+func handleBuildProof(deps demoClientDeps, deleg *delegator.Delegator, payeeLockingScriptHex string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req buildProofRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -152,12 +170,22 @@ func handleBuildProof(key *ec.PrivateKey, mainnet bool, deleg *delegator.Delegat
 			return
 		}
 
-		// 3. Call delegator to build full transaction, sign, and broadcast
+		// 3. Construct partial transaction (acting as the client)
+		partialTx, nonceOutpoint, err := buildPartialTx(deps, ch, payeeLockingScriptHex)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"error": "build partial tx: " + err.Error(),
+			})
+			return
+		}
+
+		// 4. Send partial tx to delegator for fee addition
 		delegReq := delegator.DelegationRequest{
+			PartialTxHex:                  partialTx.Hex(),
 			ChallengeHash:                 challengeHash,
 			ExpectedPayeeLockingScriptHex: payeeLockingScriptHex,
 			ExpectedAmount:                ch.AmountSats,
-			NonceUTXO:                     ch.NonceUTXO,
+			NonceOutpoint:                 nonceOutpoint,
 		}
 
 		delegResult, err := deleg.Accept(delegReq)
@@ -168,7 +196,7 @@ func handleBuildProof(key *ec.PrivateKey, mainnet bool, deleg *delegator.Delegat
 			return
 		}
 
-		// 4. Build spec-compliant proof
+		// 5. Build spec-compliant proof from the completed tx
 		rawTxBytes, err := hex.DecodeString(delegResult.RawTxHex)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{
@@ -212,6 +240,77 @@ func handleBuildProof(key *ec.PrivateKey, mainnet bool, deleg *delegator.Delegat
 			ChallengeHash: challengeHash,
 		})
 	}
+}
+
+// buildPartialTx constructs a partial transaction with client inputs signed
+// using SIGHASH_ALL|ANYONECANPAY|FORKID (0xC1). This is the canonical client
+// behaviour per spec: the client provides inputs and signs them so that the
+// delegator can append fee inputs without invalidating client signatures.
+func buildPartialTx(deps demoClientDeps, ch *challenge.Challenge, payeeLockingScriptHex string) (*transaction.Transaction, *delegator.NonceOutpointRef, error) {
+	if ch.NonceUTXO == nil {
+		return nil, nil, fmt.Errorf("challenge has no nonce_utxo")
+	}
+
+	tx := transaction.NewTransaction()
+
+	// Input 0: nonce UTXO (signed with nonceKey, 0xC1)
+	nonceUnlocker, err := p2pkh.Unlock(deps.nonceKey, &x402ClientSigHash)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create nonce unlocker: %w", err)
+	}
+
+	err = tx.AddInputFrom(
+		ch.NonceUTXO.TxID,
+		ch.NonceUTXO.Vout,
+		ch.NonceUTXO.LockingScriptHex,
+		ch.NonceUTXO.Satoshis,
+		nonceUnlocker,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("add nonce input: %w", err)
+	}
+
+	// Input 1: payment UTXO (signed with paymentKey, 0xC1)
+	paymentUTXO, err := deps.paymentPool.Lease()
+	if err != nil {
+		return nil, nil, fmt.Errorf("lease payment UTXO: %w", err)
+	}
+
+	paymentUnlocker, err := p2pkh.Unlock(deps.paymentKey, &x402ClientSigHash)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create payment unlocker: %w", err)
+	}
+
+	err = tx.AddInputFrom(paymentUTXO.TxID, paymentUTXO.Vout, paymentUTXO.Script, paymentUTXO.Satoshis, paymentUnlocker)
+	if err != nil {
+		return nil, nil, fmt.Errorf("add payment input: %w", err)
+	}
+
+	// Output 0: payee (amount from challenge)
+	payeeScriptBytes, err := hex.DecodeString(payeeLockingScriptHex)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid payee script hex: %w", err)
+	}
+	payeeScript := script.Script(payeeScriptBytes)
+	tx.AddOutput(&transaction.TransactionOutput{
+		Satoshis:      uint64(ch.AmountSats),
+		LockingScript: &payeeScript,
+	})
+
+	// Sign all client inputs (nonce + payment) with 0xC1 sighash
+	if err := tx.Sign(); err != nil {
+		return nil, nil, fmt.Errorf("sign partial tx: %w", err)
+	}
+
+	// Mark payment UTXO spent (nonce is managed by the nonce pool via challenge)
+	deps.paymentPool.MarkSpent(paymentUTXO.TxID, paymentUTXO.Vout)
+
+	nonceOutpoint := &delegator.NonceOutpointRef{
+		TxID: ch.NonceUTXO.TxID,
+		Vout: ch.NonceUTXO.Vout,
+	}
+
+	return tx, nonceOutpoint, nil
 }
 
 // handleDemoInfo returns server state for the dashboard.

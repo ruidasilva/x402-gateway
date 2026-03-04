@@ -8,10 +8,94 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bsv-blockchain/go-sdk/transaction"
 )
+
+// ---------------------------------------------------------------------------
+// MempoolChecker — independent mempool verification (CRIT-04)
+// ---------------------------------------------------------------------------
+
+// MempoolChecker verifies whether a transaction is visible in the mempool.
+// This provides the gatekeeper with independent confirmation that the
+// client's payment transaction has propagated to the network.
+type MempoolChecker interface {
+	// CheckMempool verifies transaction visibility in the mempool.
+	// Returns:
+	//   visible=true,  doubleSpend=false → tx found in mempool (200 path)
+	//   visible=false, doubleSpend=false → tx not yet visible (202 path)
+	//   visible=false, doubleSpend=true  → explicit double-spend detected (409 path)
+	//   err != nil                       → check failed (503 path)
+	CheckMempool(txid string) (visible bool, doubleSpend bool, err error)
+}
+
+// ---------------------------------------------------------------------------
+// Swappable — runtime-switchable broadcaster wrapper
+// ---------------------------------------------------------------------------
+
+// Swappable wraps a Broadcaster and allows hot-swapping the inner
+// implementation at runtime (e.g. switching from mock to WoC via dashboard).
+// All components (pools, delegator, dashboard) hold a reference to the same
+// Swappable, so swapping the inner broadcaster affects everything atomically.
+type Swappable struct {
+	mu    sync.RWMutex
+	inner transaction.Broadcaster
+	mode  string // "mock", "woc", etc.
+}
+
+// NewSwappable creates a new swappable broadcaster wrapper.
+func NewSwappable(inner transaction.Broadcaster, mode string) *Swappable {
+	return &Swappable{inner: inner, mode: mode}
+}
+
+// Broadcast delegates to the current inner broadcaster.
+func (s *Swappable) Broadcast(tx *transaction.Transaction) (*transaction.BroadcastSuccess, *transaction.BroadcastFailure) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.inner.Broadcast(tx)
+}
+
+// BroadcastCtx delegates to the current inner broadcaster.
+func (s *Swappable) BroadcastCtx(ctx context.Context, tx *transaction.Transaction) (*transaction.BroadcastSuccess, *transaction.BroadcastFailure) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.inner.BroadcastCtx(ctx, tx)
+}
+
+// Swap replaces the inner broadcaster with a new one.
+func (s *Swappable) Swap(inner transaction.Broadcaster, mode string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.inner = inner
+	s.mode = mode
+}
+
+// Mode returns the current broadcaster mode name (e.g. "mock", "woc").
+func (s *Swappable) Mode() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.mode
+}
+
+// IsMock returns true if the current broadcaster is in mock/demo mode.
+func (s *Swappable) IsMock() bool {
+	return s.Mode() == "mock"
+}
+
+// CheckMempool delegates to the inner broadcaster if it implements MempoolChecker.
+// If the inner broadcaster does not implement MempoolChecker, returns (true, false, nil)
+// as a safe fallback (assumes visible).
+func (s *Swappable) CheckMempool(txid string) (bool, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if checker, ok := s.inner.(MempoolChecker); ok {
+		return checker.CheckMempool(txid)
+	}
+	// Fallback: inner doesn't implement MempoolChecker — assume visible
+	return true, false, nil
+}
 
 // ---------------------------------------------------------------------------
 // MockBroadcaster — development/demo mode
@@ -32,6 +116,11 @@ func (m *MockBroadcaster) Broadcast(tx *transaction.Transaction) (*transaction.B
 // BroadcastCtx accepts the transaction and returns its txid.
 func (m *MockBroadcaster) BroadcastCtx(ctx context.Context, tx *transaction.Transaction) (*transaction.BroadcastSuccess, *transaction.BroadcastFailure) {
 	return m.Broadcast(tx)
+}
+
+// CheckMempool always returns visible for mock mode.
+func (m *MockBroadcaster) CheckMempool(txid string) (bool, bool, error) {
+	return true, false, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -100,4 +189,27 @@ func (w *WoCBroadcaster) Broadcast(tx *transaction.Transaction) (*transaction.Br
 // BroadcastCtx is the context-aware version.
 func (w *WoCBroadcaster) BroadcastCtx(ctx context.Context, tx *transaction.Transaction) (*transaction.BroadcastSuccess, *transaction.BroadcastFailure) {
 	return w.Broadcast(tx)
+}
+
+// CheckMempool queries WoC to verify if a transaction is visible in the mempool.
+// GET /v1/bsv/{network}/tx/{txid} — 200=found, 404=not found.
+func (w *WoCBroadcaster) CheckMempool(txid string) (bool, bool, error) {
+	url := w.baseURL + "/tx/" + txid
+
+	resp, err := w.httpClient.Get(url)
+	if err != nil {
+		return false, false, fmt.Errorf("WoC mempool check failed: %w", err)
+	}
+	defer resp.Body.Close()
+	io.ReadAll(resp.Body) // drain body
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return true, false, nil // tx visible
+	case http.StatusNotFound:
+		return false, false, nil // tx not yet visible
+	default:
+		// Unexpected status — treat as error
+		return false, false, fmt.Errorf("WoC mempool check returned HTTP %d", resp.StatusCode)
+	}
 }
