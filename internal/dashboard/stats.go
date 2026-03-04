@@ -28,6 +28,7 @@ type StatsSummary struct {
 	UptimeSeconds   float64 `json:"uptimeSeconds"`
 	NoncePool       any     `json:"noncePool"`
 	FeePool         any     `json:"feePool"`
+	PaymentPool     any     `json:"paymentPool"`
 }
 
 // TimeseriesPoint is a single time-series data point.
@@ -154,6 +155,7 @@ func (d *DashboardAPI) handleStatsSummary() http.HandlerFunc {
 		summary.UptimeSeconds = time.Since(d.startTime).Seconds()
 		summary.NoncePool = d.noncePool.Stats()
 		summary.FeePool = d.feePool.Stats()
+		summary.PaymentPool = d.paymentPool.Stats()
 
 		writeJSON(w, http.StatusOK, summary)
 	}

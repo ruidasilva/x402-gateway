@@ -67,6 +67,7 @@ export default function MonitorTab({ events, connected, clearEvents }: Props) {
         <div>
           {stats?.noncePool && <PoolStats label="Nonce" stats={stats.noncePool} />}
           {stats?.feePool && <PoolStats label="Fee" stats={stats.feePool} />}
+          {stats?.paymentPool && <PoolStats label="Payment" stats={stats.paymentPool} />}
         </div>
         <div>
           <div className="card">

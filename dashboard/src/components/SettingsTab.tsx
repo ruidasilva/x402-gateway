@@ -12,12 +12,14 @@ export default function SettingsTab() {
   const [feeRate, setFeeRate] = useState<string>('')
   const [threshold, setThreshold] = useState<string>('')
   const [optimalSize, setOptimalSize] = useState<string>('')
+  const [broadcaster, setBroadcaster] = useState<string>('')
 
   // Initialize editable fields when config loads
   if (config && !feeRate) {
     setFeeRate(String(config.feeRate))
     setThreshold(String(config.poolReplenishThreshold))
     setOptimalSize(String(config.poolOptimalSize))
+    setBroadcaster(config.broadcaster)
   }
 
   async function handleSave() {
@@ -32,6 +34,7 @@ export default function SettingsTab() {
         if (!isNaN(newThreshold) && newThreshold !== config.poolReplenishThreshold) updates.poolReplenishThreshold = newThreshold
         const newOptimal = parseInt(optimalSize)
         if (!isNaN(newOptimal) && newOptimal !== config.poolOptimalSize) updates.poolOptimalSize = newOptimal
+        if (broadcaster && broadcaster !== config.broadcaster) updates.broadcaster = broadcaster
       }
       if (Object.keys(updates).length === 0) {
         setMessage({ type: 'error', text: 'No changes to save' })
@@ -74,10 +77,6 @@ export default function SettingsTab() {
           <span className="config-value">{config.network}</span>
         </div>
         <div className="config-row">
-          <span className="config-key">Broadcaster</span>
-          <span className="config-value">{config.broadcaster}</span>
-        </div>
-        <div className="config-row">
           <span className="config-key">Port</span>
           <span className="config-value">{config.port}</span>
         </div>
@@ -90,8 +89,8 @@ export default function SettingsTab() {
           <span className="config-value">{config.keyMode === 'xpriv' ? 'HD Wallet (xPriv)' : 'Single Key (WIF)'}</span>
         </div>
         <div className="config-row">
-          <span className="config-key">Nonce Lease TTL</span>
-          <span className="config-value">{config.nonceLeaseTTLSeconds}s</span>
+          <span className="config-key">Lease TTL</span>
+          <span className="config-value">{config.leaseTTLSeconds}s</span>
         </div>
       </div>
 
@@ -103,6 +102,7 @@ export default function SettingsTab() {
         {[
           { label: 'Payee', addr: config.payeeAddress },
           { label: 'Nonce Pool', addr: config.nonceAddress },
+          { label: 'Payment Pool', addr: config.paymentAddress },
           { label: 'Fee Pool', addr: config.feeAddress },
           { label: 'Treasury', addr: config.treasuryAddress },
         ].map(({ label, addr }) => (
@@ -120,6 +120,57 @@ export default function SettingsTab() {
         <div className="card-header">
           <span className="card-title">Runtime Configuration</span>
           <span className="card-subtitle">Applied immediately without restart</span>
+        </div>
+        <div className="form-group">
+          <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            Broadcaster
+            {broadcaster === 'mock' ? (
+              <span
+                style={{
+                  fontSize: 10,
+                  fontWeight: 600,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em',
+                  padding: '2px 6px',
+                  borderRadius: 4,
+                  background: 'rgba(245, 158, 11, 0.15)',
+                  color: '#f59e0b',
+                  border: '1px solid rgba(245, 158, 11, 0.3)',
+                }}
+              >
+                Demo
+              </span>
+            ) : (
+              <span
+                style={{
+                  fontSize: 10,
+                  fontWeight: 600,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em',
+                  padding: '2px 6px',
+                  borderRadius: 4,
+                  background: 'rgba(34, 197, 94, 0.15)',
+                  color: '#22c55e',
+                  border: '1px solid rgba(34, 197, 94, 0.3)',
+                }}
+              >
+                Live
+              </span>
+            )}
+          </label>
+          <select
+            className="form-input"
+            value={broadcaster}
+            onChange={(e) => setBroadcaster(e.target.value)}
+          >
+            <option value="mock">Mock (demo — transactions not broadcast)</option>
+            <option value="woc">WhatsonChain (live — broadcast to network)</option>
+          </select>
+          {broadcaster !== config.broadcaster && (
+            <div style={{ marginTop: 4, fontSize: 12, color: '#f59e0b' }}>
+              Changing broadcaster will take effect immediately for all new transactions.
+            </div>
+          )}
         </div>
         <div className="form-group">
           <label className="form-label">Fee Rate (sat/byte)</label>

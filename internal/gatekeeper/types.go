@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"time"
 
-	deleg "github.com/merkle-works/x402-gateway/internal/delegator"
+	"github.com/merkle-works/x402-gateway/internal/broadcast"
 	"github.com/merkle-works/x402-gateway/internal/pool"
 	"github.com/merkle-works/x402-gateway/internal/pricing"
 	"github.com/merkle-works/x402-gateway/internal/replay"
@@ -12,11 +12,9 @@ import (
 
 // Config configures the gatekeeper middleware.
 type Config struct {
-	// Delegator handles transaction finalization and broadcasting.
-	Delegator *deleg.Delegator
-
-	// NoncePool provides nonce UTXOs for challenges.
-	NoncePool pool.Pool
+	// MempoolChecker provides independent mempool verification (CRIT-04).
+	// If nil, mempool check is skipped (backwards compat).
+	MempoolChecker broadcast.MempoolChecker
 
 	// ReplayCache provides early replay detection at the gatekeeper layer.
 	// Defence-in-depth: the delegator also checks replay independently.
@@ -24,6 +22,11 @@ type Config struct {
 
 	// ChallengeCache stores issued challenges for binding verification.
 	ChallengeCache *ChallengeCache
+
+	// NoncePool is the pool of 1-sat UTXOs used for replay-protection nonces.
+	// Each 402 challenge leases a nonce from this pool. The proof transaction
+	// must spend the nonce outpoint, providing Bitcoin-enforced single-use.
+	NoncePool pool.Pool
 
 	// PayeeLockingScriptHex is the hex-encoded locking script for payments.
 	PayeeLockingScriptHex string
@@ -52,7 +55,6 @@ var HeaderAllowlist = []string{
 }
 
 // Proof is the client's payment proof submitted in the X402-Proof header.
-// Structure matches 04-Protocol-Spec.md.
 type Proof struct {
 	V               string         `json:"v"`
 	Scheme          string         `json:"scheme"`
@@ -81,7 +83,7 @@ type ClientSig struct {
 }
 
 // ---------------------------------------------------------------------------
-// Spec error codes (04-Protocol-Spec.md)
+// Spec error codes
 // ---------------------------------------------------------------------------
 
 // ErrorCode is a spec-defined error identifier.
@@ -90,31 +92,35 @@ type ErrorCode string
 const (
 	ErrInvalidVersion     ErrorCode = "invalid_version"
 	ErrInvalidScheme      ErrorCode = "invalid_scheme"
-	ErrInvalidNonce       ErrorCode = "invalid_nonce"
 	ErrInvalidPayee       ErrorCode = "invalid_payee"
 	ErrInsufficientAmount ErrorCode = "insufficient_amount"
 	ErrExpiredChallenge   ErrorCode = "expired_challenge"
 	ErrMempoolRejected    ErrorCode = "mempool_rejected"
+	ErrMempoolPending     ErrorCode = "payment_pending"
+	ErrMempoolError       ErrorCode = "mempool_check_error"
 	ErrInvalidBinding     ErrorCode = "invalid_binding"
 	ErrDoubleSpend        ErrorCode = "double_spend"
 	ErrInvalidProof       ErrorCode = "invalid_proof"
 	ErrChallengeNotFound  ErrorCode = "challenge_not_found"
-	ErrNoNoncesAvailable  ErrorCode = "no_nonces_available"
+	ErrNonceMissing       ErrorCode = "nonce_missing"
+	ErrNoUTXOsAvailable   ErrorCode = "no_utxos_available"
 	ErrInternalError      ErrorCode = "internal_error"
 )
 
 // HTTPStatusForError maps spec error codes to HTTP status codes.
 func HTTPStatusForError(code ErrorCode) int {
 	switch code {
-	case ErrInvalidVersion, ErrInvalidScheme, ErrInvalidProof, ErrInvalidNonce, ErrChallengeNotFound:
+	case ErrInvalidVersion, ErrInvalidScheme, ErrInvalidProof, ErrChallengeNotFound, ErrNonceMissing:
 		return http.StatusBadRequest
-	case ErrExpiredChallenge, ErrMempoolRejected, ErrInsufficientAmount:
+	case ErrExpiredChallenge, ErrInsufficientAmount:
 		return http.StatusPaymentRequired
 	case ErrInvalidBinding, ErrInvalidPayee:
 		return http.StatusForbidden
-	case ErrDoubleSpend:
+	case ErrDoubleSpend, ErrMempoolRejected:
 		return http.StatusConflict
-	case ErrNoNoncesAvailable:
+	case ErrMempoolPending:
+		return http.StatusAccepted
+	case ErrNoUTXOsAvailable, ErrMempoolError:
 		return http.StatusServiceUnavailable
 	default:
 		return http.StatusInternalServerError

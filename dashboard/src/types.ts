@@ -15,12 +15,13 @@ export interface ConfigResponse {
   poolReplenishThreshold: number
   poolOptimalSize: number
   redisEnabled: boolean
-  noncePoolSize: number
-  nonceLeaseTTLSeconds: number
+  poolSize: number
+  leaseTTLSeconds: number
   payeeAddress: string
   keyMode: string // "xpriv" or "wif"
   nonceAddress: string
   feeAddress: string
+  paymentAddress: string
   treasuryAddress: string
 }
 
@@ -35,6 +36,7 @@ export interface StatsSummary {
   uptimeSeconds: number
   noncePool: PoolStats
   feePool: PoolStats
+  paymentPool: PoolStats
 }
 
 // Time-series data point
@@ -49,10 +51,27 @@ export interface TimeseriesPoint {
 export interface TreasuryInfo {
   address: string
   network: string
+  broadcaster: string
   keyMode: string
   derivationPath: string
   noncePool: PoolStats
   feePool: PoolStats
+  paymentPool: PoolStats
+}
+
+// Treasury UTXO from the watcher
+export interface TreasuryUTXO {
+  txid: string
+  vout: number
+  script: string
+  satoshis: number
+}
+
+// Treasury UTXOs response
+export interface TreasuryUTXOsResponse {
+  utxos: TreasuryUTXO[]
+  lastPoll?: string
+  error?: string
 }
 
 // Fan-out history entry

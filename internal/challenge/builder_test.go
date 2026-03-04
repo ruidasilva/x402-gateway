@@ -2,23 +2,13 @@ package challenge
 
 import (
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
-
-	"github.com/merkle-works/x402-gateway/internal/pool"
 )
 
 func TestBuildAndHash(t *testing.T) {
 	req := httptest.NewRequest("GET", "http://localhost:8402/v1/expensive?foo=bar", nil)
 	req.Header.Set("Content-Type", "application/json")
-
-	nonceUTXO := &pool.UTXO{
-		TxID:     strings.Repeat("a", 64),
-		Vout:     0,
-		Script:   "76a91489abcdefab89abcdefab89abcdefab89abcdefab88ac",
-		Satoshis: 1,
-	}
 
 	opts := BuildOptions{
 		PayeeLockingScriptHex: "76a91489abcdefab89abcdefab89abcdefab89abcdefab88ac",
@@ -26,9 +16,15 @@ func TestBuildAndHash(t *testing.T) {
 		Network:               "testnet",
 		TTL:                   5 * time.Minute,
 		BindHeaders:           []string{"Content-Type"},
+		NonceUTXO: &NonceRef{
+			TxID:             "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+			Vout:             0,
+			Satoshis:         1,
+			LockingScriptHex: "76a914aabbccdd88ac",
+		},
 	}
 
-	ch, err := Build(req, nonceUTXO, opts)
+	ch, err := Build(req, opts)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -46,9 +42,6 @@ func TestBuildAndHash(t *testing.T) {
 	if ch.PayeeLockingScriptHex != opts.PayeeLockingScriptHex {
 		t.Errorf("payee_locking_script_hex: got %s, want %s", ch.PayeeLockingScriptHex, opts.PayeeLockingScriptHex)
 	}
-	if ch.NonceUTXO.TxID != nonceUTXO.TxID {
-		t.Errorf("nonce_utxo.txid: got %s, want %s", ch.NonceUTXO.TxID, nonceUTXO.TxID)
-	}
 	if ch.ExpiresAt <= time.Now().Unix() {
 		t.Error("expires_at should be in the future")
 	}
@@ -57,6 +50,20 @@ func TestBuildAndHash(t *testing.T) {
 	}
 	if ch.ConfirmationsRequired != 0 {
 		t.Errorf("confirmations_required: got %d, want 0", ch.ConfirmationsRequired)
+	}
+
+	// Verify nonce UTXO is set
+	if ch.NonceUTXO == nil {
+		t.Fatal("nonce_utxo should be set")
+	}
+	if ch.NonceUTXO.TxID != opts.NonceUTXO.TxID {
+		t.Errorf("nonce txid: got %s, want %s", ch.NonceUTXO.TxID, opts.NonceUTXO.TxID)
+	}
+	if ch.NonceUTXO.Vout != 0 {
+		t.Errorf("nonce vout: got %d, want 0", ch.NonceUTXO.Vout)
+	}
+	if ch.NonceUTXO.Satoshis != 1 {
+		t.Errorf("nonce satoshis: got %d, want 1", ch.NonceUTXO.Satoshis)
 	}
 
 	// Verify flat request binding fields
@@ -101,15 +108,15 @@ func TestEncodeAndDecode(t *testing.T) {
 		AmountSats:            200,
 		PayeeLockingScriptHex: "76a91489abcdefab88ac",
 		ExpiresAt:             time.Now().Add(5 * time.Minute).Unix(),
-		NonceUTXO: NonceRef{
-			TxID:             strings.Repeat("b", 64),
-			Vout:             1,
-			LockingScriptHex: "76a91489abcdefab88ac",
+		Domain:                "example.com",
+		Method:                "POST",
+		Path:                  "/api/data",
+		NonceUTXO: &NonceRef{
+			TxID:             "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+			Vout:             2,
 			Satoshis:         1,
+			LockingScriptHex: "76a914aabb88ac",
 		},
-		Domain: "example.com",
-		Method: "POST",
-		Path:   "/api/data",
 	}
 
 	encoded, err := Encode(ch)
@@ -131,11 +138,17 @@ func TestEncodeAndDecode(t *testing.T) {
 	if decoded.AmountSats != ch.AmountSats {
 		t.Errorf("amount_sats mismatch: got %d, want %d", decoded.AmountSats, ch.AmountSats)
 	}
-	if decoded.NonceUTXO.TxID != ch.NonceUTXO.TxID {
-		t.Errorf("nonce_utxo.txid mismatch")
-	}
 	if decoded.Domain != ch.Domain {
 		t.Errorf("domain mismatch: got %s, want %s", decoded.Domain, ch.Domain)
+	}
+	if decoded.NonceUTXO == nil {
+		t.Fatal("nonce_utxo should survive encode/decode round-trip")
+	}
+	if decoded.NonceUTXO.TxID != ch.NonceUTXO.TxID {
+		t.Errorf("nonce txid mismatch: got %s, want %s", decoded.NonceUTXO.TxID, ch.NonceUTXO.TxID)
+	}
+	if decoded.NonceUTXO.Vout != ch.NonceUTXO.Vout {
+		t.Errorf("nonce vout mismatch: got %d, want %d", decoded.NonceUTXO.Vout, ch.NonceUTXO.Vout)
 	}
 }
 

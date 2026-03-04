@@ -125,15 +125,14 @@ func TestHTTPStatusForError(t *testing.T) {
 		{ErrInvalidVersion, 400},
 		{ErrInvalidScheme, 400},
 		{ErrInvalidProof, 400},
-		{ErrInvalidNonce, 400},
 		{ErrChallengeNotFound, 400},
 		{ErrExpiredChallenge, 402},
-		{ErrMempoolRejected, 402},
+		{ErrMempoolRejected, 409},
 		{ErrInsufficientAmount, 402},
 		{ErrInvalidBinding, 403},
 		{ErrInvalidPayee, 403},
 		{ErrDoubleSpend, 409},
-		{ErrNoNoncesAvailable, 503},
+		{ErrNoUTXOsAvailable, 503},
 		{ErrInternalError, 500},
 	}
 

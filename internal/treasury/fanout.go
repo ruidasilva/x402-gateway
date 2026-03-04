@@ -19,8 +19,10 @@ type FanoutRequest struct {
 	FundingVout     uint32  // vout of the funding UTXO
 	FundingScript   string  // hex locking script of the funding UTXO
 	FundingSatoshis uint64  // value of the funding UTXO
-	OutputCount     int     // number of 1-sat UTXOs to create
+	OutputCount     int     // number of UTXOs to create
 	FeeRate         float64 // fee rate in sat/byte
+	TargetAddress   string  // optional: address for outputs (defaults to signing key's address)
+	OutputSatoshis  uint64  // optional: satoshis per output (defaults to 1)
 }
 
 // FanoutResult contains the broadcast txid and the newly created UTXOs.
@@ -47,10 +49,19 @@ func BuildFanout(
 
 	logger := slog.Default().With("component", "treasury-fanout")
 
-	// Derive address from key
-	addr, err := script.NewAddressFromPublicKey(key.PubKey(), mainnet)
-	if err != nil {
-		return nil, fmt.Errorf("derive address: %w", err)
+	// Derive output address (use target if specified, else derive from key)
+	var addr *script.Address
+	var err error
+	if req.TargetAddress != "" {
+		addr, err = script.NewAddressFromString(req.TargetAddress)
+		if err != nil {
+			return nil, fmt.Errorf("parse target address: %w", err)
+		}
+	} else {
+		addr, err = script.NewAddressFromPublicKey(key.PubKey(), mainnet)
+		if err != nil {
+			return nil, fmt.Errorf("derive address: %w", err)
+		}
 	}
 
 	// Build the fan-out transaction
@@ -75,10 +86,16 @@ func BuildFanout(
 		return nil, fmt.Errorf("add funding input: %w", err)
 	}
 
-	// Add N × 1-sat outputs
+	// Determine output denomination (default to 1 sat if not specified)
+	outputSats := req.OutputSatoshis
+	if outputSats == 0 {
+		outputSats = 1
+	}
+
+	// Add N × outputSats outputs
 	addrStr := addr.AddressString
 	for i := 0; i < req.OutputCount; i++ {
-		if err := tx.PayToAddress(addrStr, 1); err != nil {
+		if err := tx.PayToAddress(addrStr, outputSats); err != nil {
 			return nil, fmt.Errorf("add output %d: %w", i, err)
 		}
 	}
@@ -91,14 +108,15 @@ func BuildFanout(
 		fee = 1
 	}
 
-	requiredSats := uint64(req.OutputCount) + fee
+	totalOutputSats := uint64(req.OutputCount) * outputSats
+	requiredSats := totalOutputSats + fee
 	if req.FundingSatoshis < requiredSats {
-		return nil, fmt.Errorf("insufficient funding: need %d sats (%d outputs + %d fee), have %d",
-			requiredSats, req.OutputCount, fee, req.FundingSatoshis)
+		return nil, fmt.Errorf("insufficient funding: need %d sats (%d outputs × %d sats + %d fee), have %d",
+			requiredSats, req.OutputCount, outputSats, fee, req.FundingSatoshis)
 	}
 
 	// Add change output if there's leftover above dust
-	change := req.FundingSatoshis - uint64(req.OutputCount) - fee
+	change := req.FundingSatoshis - totalOutputSats - fee
 	if change > 546 { // dust threshold
 		if err := tx.PayToAddress(addrStr, change); err != nil {
 			return nil, fmt.Errorf("add change output: %w", err)
@@ -132,13 +150,14 @@ func BuildFanout(
 			TxID:     txid,
 			Vout:     uint32(i),
 			Script:   scriptHex,
-			Satoshis: 1,
+			Satoshis: outputSats,
 		}
 	}
 
 	logger.Info("fan-out complete",
 		"txid", txid,
 		"outputs", req.OutputCount,
+		"sats_per_output", outputSats,
 		"funding_sats", req.FundingSatoshis,
 		"fee", fee,
 		"change", change,

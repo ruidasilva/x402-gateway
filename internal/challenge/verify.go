@@ -2,6 +2,7 @@ package challenge
 
 import (
 	"bytes"
+	"crypto/subtle"
 	"fmt"
 	"io"
 	"net/http"
@@ -48,13 +49,13 @@ func VerifyBinding(ch *Challenge, req *http.Request, bindHeaders []string) error
 		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 	}
 	bodyHash := HashBody(bodyBytes)
-	if bodyHash != ch.ReqBodySHA256 {
+	if subtle.ConstantTimeCompare([]byte(bodyHash), []byte(ch.ReqBodySHA256)) != 1 {
 		return fmt.Errorf("body hash mismatch: request=%s, challenge=%s", bodyHash, ch.ReqBodySHA256)
 	}
 
-	// Recompute headers hash
+	// Recompute headers hash (constant-time comparison)
 	headersHash := HashHeaders(req.Header, bindHeaders)
-	if headersHash != ch.ReqHeadersSHA256 {
+	if subtle.ConstantTimeCompare([]byte(headersHash), []byte(ch.ReqHeadersSHA256)) != 1 {
 		return fmt.Errorf("headers hash mismatch: request=%s, challenge=%s", headersHash, ch.ReqHeadersSHA256)
 	}
 

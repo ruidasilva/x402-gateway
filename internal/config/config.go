@@ -24,11 +24,11 @@ type Config struct {
 	// HTTP server port
 	Port int
 
-	// Nonce pool initial size
-	NoncePoolSize int
+	// Pool initial size (fee + payment pools)
+	PoolSize int
 
-	// Nonce lease TTL
-	NonceLeaseTTL time.Duration
+	// Pool lease TTL
+	LeaseTTL time.Duration
 
 	// Fee rate in sat/byte (BSV standard: 1 sat/KB = 0.001 sat/byte)
 	FeeRate float64
@@ -46,19 +46,29 @@ type Config struct {
 	// Pool thresholds for auto-refill
 	PoolReplenishThreshold int // trigger refill when available < this (default 500)
 	PoolOptimalSize        int // target size after refill (default 5000)
+
+	// Treasury UTXO watcher poll interval in seconds (0 = disabled)
+	TreasuryPollInterval int
+
+	// Backward-compatible aliases (deprecated, use PoolSize/LeaseTTL)
+	NoncePoolSize int
+	NonceLeaseTTL time.Duration
 }
 
 // Load reads configuration from environment variables.
 // Required: one of XPRIV or BSV_PRIVATE_KEY, plus FEE_RATE and BROADCASTER.
 func Load() (*Config, error) {
+	poolSize := envIntOrDefault("POOL_SIZE", envIntOrDefault("NONCE_POOL_SIZE", 100))
+	leaseTTL := time.Duration(envIntOrDefault("LEASE_TTL", envIntOrDefault("NONCE_LEASE_TTL", 300))) * time.Second
+
 	cfg := &Config{
 		BSVPrivateKey:  os.Getenv("BSV_PRIVATE_KEY"),
 		XPRIV:          os.Getenv("XPRIV"),
 		BSVNetwork:     envOrDefault("BSV_NETWORK", "testnet"),
 		PayeeAddress:   os.Getenv("PAYEE_ADDRESS"),
 		Port:           envIntOrDefault("PORT", 8402),
-		NoncePoolSize:  envIntOrDefault("NONCE_POOL_SIZE", 100),
-		NonceLeaseTTL:  time.Duration(envIntOrDefault("NONCE_LEASE_TTL", 300)) * time.Second,
+		PoolSize:       poolSize,
+		LeaseTTL:       leaseTTL,
 		FeeRate:        envFloatOrDefault("FEE_RATE", 0),
 		Broadcaster:    os.Getenv("BROADCASTER"),
 		DailyFeeBudget:         uint64(envIntOrDefault("DAILY_FEE_BUDGET", 0)),
@@ -66,6 +76,11 @@ func Load() (*Config, error) {
 		RedisEnabled:           envBoolOrDefault("REDIS_ENABLED", false),
 		PoolReplenishThreshold: envIntOrDefault("POOL_REPLENISH_THRESHOLD", 500),
 		PoolOptimalSize:        envIntOrDefault("POOL_OPTIMAL_SIZE", 5000),
+		TreasuryPollInterval:   envIntOrDefault("TREASURY_POLL_INTERVAL", 60),
+
+		// Backward-compatible aliases
+		NoncePoolSize: poolSize,
+		NonceLeaseTTL: leaseTTL,
 	}
 
 	if cfg.BSVPrivateKey == "" && cfg.XPRIV == "" {

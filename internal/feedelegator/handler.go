@@ -157,7 +157,7 @@ func (h *Handler) HandleDelegateTx() http.HandlerFunc {
 
 				tx.AddInput(input)
 			} else {
-				// Unsigned input — typically the nonce input in x402 flow
+				// Unsigned input
 				input := &transaction.TransactionInput{
 					SourceTXID:       txidHash,
 					SourceTxOutIndex: inp.Vout,
@@ -324,29 +324,24 @@ func (h *Handler) HandleHealth(startTime time.Time) http.HandlerFunc {
 }
 
 // HandleUTXOStats returns an http.HandlerFunc for GET /api/utxo/stats.
-func (h *Handler) HandleUTXOStats(redisEnabled bool, noncePool pool.Pool) http.HandlerFunc {
+func (h *Handler) HandleUTXOStats(redisEnabled bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
 			"success":      true,
 			"redisEnabled": redisEnabled,
 			"stats": map[string]any{
-				"nonce": noncePool.Stats(),
-				"fee":   h.feePool.Stats(),
+				"fee": h.feePool.Stats(),
 			},
 		})
 	}
 }
 
 // HandleUTXOHealth returns an http.HandlerFunc for GET /api/utxo/health.
-func (h *Handler) HandleUTXOHealth(noncePool pool.Pool) http.HandlerFunc {
+func (h *Handler) HandleUTXOHealth() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		nonceStats := noncePool.Stats()
 		feeStats := h.feePool.Stats()
-
-		nonceHealthy := nonceStats.Available > 0
-		feeHealthy := feeStats.Available > 0
-		healthy := nonceHealthy && feeHealthy
+		healthy := feeStats.Available > 0
 
 		status := "healthy"
 		if !healthy {
@@ -359,18 +354,13 @@ func (h *Handler) HandleUTXOHealth(noncePool pool.Pool) http.HandlerFunc {
 			"status":  status,
 			"healthy": healthy,
 			"poolHealth": map[string]any{
-				"nonce": map[string]any{
-					"healthy":   nonceHealthy,
-					"available": nonceStats.Available,
-					"total":     nonceStats.Total,
-				},
 				"fee": map[string]any{
-					"healthy":   feeHealthy,
+					"healthy":   healthy,
 					"available": feeStats.Available,
 					"total":     feeStats.Total,
 				},
 			},
-			"availableUtxos": nonceStats.Available + feeStats.Available,
+			"availableUtxos": feeStats.Available,
 		})
 	}
 }
