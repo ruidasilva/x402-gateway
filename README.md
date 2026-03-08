@@ -8,6 +8,8 @@
 | **Specification Repository** | https://github.com/ruidasilva/merkleworks-x402-spec |
 | **Reference Implementation** | this repository |
 
+This repository provides the reference implementation of the x402 protocol. The canonical protocol specification is maintained separately in the [merkleworks-x402-spec](https://github.com/ruidasilva/merkleworks-x402-spec) repository.
+
 The x402 protocol defines a stateless settlement-gated HTTP authorization model where request execution is conditioned on verifiable economic settlement.
 
 The protocol specification defines:
