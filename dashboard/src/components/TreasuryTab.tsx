@@ -41,7 +41,7 @@ export default function TreasuryTab() {
         fundingScript,
         fundingSatoshis: parseInt(fundingSatoshis),
       })
-      setResult({ type: 'success', text: `Fan-out complete: ${res.utxoCount} UTXOs created (txid: ${res.txid.slice(0, 16)}...)` })
+      setResult({ type: 'success', text: `Fan-out complete: ${res.utxoCount} UTXOs created (txid: ${res.txid})` })
       refreshInfo()
       refreshHistory()
       refreshUTXOs()
@@ -195,7 +195,7 @@ export default function TreasuryTab() {
                         style={{ color: 'var(--accent-blue)', textDecoration: 'none' }}
                         title={demoMode ? `${utxo.txid} (demo — may not exist on-chain)` : utxo.txid}
                       >
-                        {utxo.txid.slice(0, 16)}...
+                        {utxo.txid}
                       </a>
                     </td>
                     <td>{utxo.vout}</td>
@@ -286,7 +286,7 @@ export default function TreasuryTab() {
                 <option value="">-- Select a UTXO --</option>
                 {utxos.map((utxo) => (
                   <option key={`${utxo.txid}:${utxo.vout}`} value={`${utxo.txid}:${utxo.vout}`}>
-                    {utxo.txid.slice(0, 16)}... : {utxo.vout} ({formatSats(utxo.satoshis)})
+                    {utxo.txid} : {utxo.vout} ({formatSats(utxo.satoshis)})
                   </option>
                 ))}
               </select>
@@ -357,7 +357,7 @@ export default function TreasuryTab() {
                       style={{ color: 'var(--accent-blue)', textDecoration: 'none' }}
                       title={demoMode ? `${entry.txid} (demo — may not exist on-chain)` : entry.txid}
                     >
-                      {entry.txid.slice(0, 16)}...
+                      {entry.txid}
                     </a>
                   </td>
                   <td>{entry.pool}</td>

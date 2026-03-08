@@ -22,6 +22,7 @@ type FanoutRequest struct {
 	OutputCount     int     // number of UTXOs to create
 	FeeRate         float64 // fee rate in sat/byte
 	TargetAddress   string  // optional: address for outputs (defaults to signing key's address)
+	ChangeAddress   string  // optional: address for change output (defaults to TargetAddress)
 	OutputSatoshis  uint64  // optional: satoshis per output (defaults to 1)
 }
 
@@ -115,10 +116,16 @@ func BuildFanout(
 			requiredSats, req.OutputCount, outputSats, fee, req.FundingSatoshis)
 	}
 
-	// Add change output if there's leftover above dust
+	// Add change output if there's leftover above dust.
+	// Change goes to ChangeAddress (typically treasury) so it remains
+	// accessible for future fan-outs, rather than stranding in the pool.
 	change := req.FundingSatoshis - totalOutputSats - fee
 	if change > 546 { // dust threshold
-		if err := tx.PayToAddress(addrStr, change); err != nil {
+		changeAddr := addrStr
+		if req.ChangeAddress != "" {
+			changeAddr = req.ChangeAddress
+		}
+		if err := tx.PayToAddress(changeAddr, change); err != nil {
 			return nil, fmt.Errorf("add change output: %w", err)
 		}
 	}

@@ -213,7 +213,9 @@ func (d *DashboardAPI) handleTreasuryFanout() http.HandlerFunc {
 			outputSats = 100 // payment pool uses 100-sat UTXOs
 		}
 
-		// Build and broadcast fan-out transaction
+		// Build and broadcast fan-out transaction.
+		// Change returns to the treasury address so it remains accessible
+		// for future fan-outs (not stranded in the pool address).
 		result, err := treasury.BuildFanout(
 			signingKey,
 			d.mainnet,
@@ -225,6 +227,7 @@ func (d *DashboardAPI) handleTreasuryFanout() http.HandlerFunc {
 				OutputCount:     req.Count,
 				FeeRate:         d.cfg.FeeRate,
 				TargetAddress:   targetAddr,
+				ChangeAddress:   d.keys.TreasuryAddress,
 				OutputSatoshis:  outputSats,
 			},
 			d.broadcaster,

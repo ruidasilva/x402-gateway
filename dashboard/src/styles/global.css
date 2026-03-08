@@ -342,6 +342,7 @@ select.form-input {
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   color: var(--text-secondary);
+  word-break: break-all;
 }
 
 .table tr:hover td { background: var(--bg-hover); }
