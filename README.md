@@ -1,8 +1,34 @@
 # x402 Settlement Gateway
 
-A reference implementation of the x402 settlement-gated HTTP protocol using Bitcoin SV.
+## Protocol Status
 
-The gateway intercepts requests to protected endpoints, issues cryptographic challenges backed by nonce UTXOs, and verifies on-chain settlement proofs before granting access.
+| | |
+|---|---|
+| **x402 Protocol** | v1.0-spec (Frozen) |
+| **Specification Repository** | https://github.com/ruidasilva/merkleworks-x402-spec |
+| **Reference Implementation** | this repository |
+
+The x402 protocol defines a stateless settlement-gated HTTP authorization model where request execution is conditioned on verifiable economic settlement.
+
+The protocol specification defines:
+
+- HTTP status semantics (402 Payment Required)
+- Challenge / proof wire format
+- Deterministic request binding rules
+- Settlement verification rules
+
+This repository provides a reference gateway implementation used to test and demonstrate the protocol in real deployments.
+
+The implementation intentionally follows the specification hierarchy:
+
+| Level | Scope |
+|-------|-------|
+| **Tier 0** | Protocol invariants (North Star) |
+| **Tier 1** | Wire protocol specification |
+| **Tier 2** | Reference implementation architecture |
+| **Code** | Implementation |
+
+When implementation behavior diverges from the specification, the specification prevails.
 
 ## Overview
 
