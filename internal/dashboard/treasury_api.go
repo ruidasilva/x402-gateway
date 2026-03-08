@@ -1,3 +1,13 @@
+// Copyright 2026 Merkle Works
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+
+
 package dashboard
 
 import (
@@ -213,7 +223,9 @@ func (d *DashboardAPI) handleTreasuryFanout() http.HandlerFunc {
 			outputSats = 100 // payment pool uses 100-sat UTXOs
 		}
 
-		// Build and broadcast fan-out transaction
+		// Build and broadcast fan-out transaction.
+		// Change returns to the treasury address so it remains accessible
+		// for future fan-outs (not stranded in the pool address).
 		result, err := treasury.BuildFanout(
 			signingKey,
 			d.mainnet,
@@ -225,6 +237,7 @@ func (d *DashboardAPI) handleTreasuryFanout() http.HandlerFunc {
 				OutputCount:     req.Count,
 				FeeRate:         d.cfg.FeeRate,
 				TargetAddress:   targetAddr,
+				ChangeAddress:   d.keys.TreasuryAddress,
 				OutputSatoshis:  outputSats,
 			},
 			d.broadcaster,

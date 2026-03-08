@@ -1,16 +1,85 @@
-# x402 Gateway
+# x402 Settlement Gateway
 
-A BSV (Bitcoin SV) payment protocol gateway that enables HTTP services to require micropayments via Bitcoin transactions. Implements the x402 protocol specification for Pay-Per-Request microservices.
+## Protocol Status
+
+| | |
+|---|---|
+| **x402 Protocol** | v1.0-spec (Frozen) |
+| **Specification Repository** | https://github.com/ruidasilva/merkleworks-x402-spec |
+| **Reference Implementation** | this repository |
+
+This repository provides the reference implementation of the x402 protocol. The canonical protocol specification is maintained separately in the [merkleworks-x402-spec](https://github.com/ruidasilva/merkleworks-x402-spec) repository.
+
+The x402 protocol defines a stateless settlement-gated HTTP authorization model where request execution is conditioned on verifiable economic settlement.
+
+The protocol specification defines:
+
+- HTTP status semantics (402 Payment Required)
+- Challenge / proof wire format
+- Deterministic request binding rules
+- Settlement verification rules
+
+This repository provides a reference gateway implementation used to test and demonstrate the protocol in real deployments.
+
+The implementation intentionally follows the specification hierarchy:
+
+| Level | Scope |
+|-------|-------|
+| **Tier 0** | Protocol invariants (North Star) |
+| **Tier 1** | Wire protocol specification |
+| **Tier 2** | Reference implementation architecture |
+| **Code** | Implementation |
+
+When implementation behavior diverges from the specification, the specification prevails.
 
 ## Overview
 
-The x402 Gateway provides:
-- **HTTP 402 Payment Required** flow for protected endpoints
-- **UTXO Pool Management** for nonces and transaction fees
-- **Fee Delegation** - server pays miner fees on behalf of clients
-- **Replay Protection** - prevents double-spending attacks
-- **React Dashboard** - real-time monitoring and management
-- **Redis Support** - persistent pools for production deployments
+The x402 Settlement Gateway implements settlement-gated HTTP execution using the x402 protocol.
+
+The gateway provides:
+
+- **HTTP 402 challenge–proof–retry flow** for protected endpoints
+- **Nonce-UTXO issuance** for replay-safe payment challenges
+- **Deterministic request binding** using canonical hashing
+- **Fee delegation** — delegator adds miner-fee inputs and signs only its own inputs
+- **Optional sponsored settlement** — deployment mode may sponsor service payment and/or miner fees, depending on configuration
+- **Stateless proof verification** before endpoint execution
+- **Configurable acceptance semantics** (mempool visibility or confirmation depth)
+- **Operational monitoring** via React dashboard
+
+Replay protection is enforced by UTXO single-use at the network layer. Correctness does not depend on nonce databases, account ledgers, or balance tracking. Redis and in-memory caches exist as operational aids (lease management, pool indexing), not as correctness primitives.
+
+## Protocol Authority
+
+This implementation conforms to the **x402 Protocol Specification** maintained at:
+
+**[merkleworks-x402-spec](https://github.com/ruidasilva/merkleworks-x402-spec)**
+
+The specification repository contains the normative documents that govern this codebase:
+
+| Document | Authority |
+|----------|-----------|
+| `north-star.md` | Tier 0 — Frozen invariants and constitutional doctrine |
+| `protocol-spec.md` | Tier 1 — Wire-level protocol: HTTP headers, challenge/proof format, status codes |
+| `reference-impl-spec.md` | Tier 2 — Implementation architecture: component roles, signing rules, pool management |
+
+**Authority hierarchy**: Tier 0 → Tier 1 → Tier 2 → Code. Documents are normative. Code conforms to documents, never the reverse. When code contradicts a spec document, the code is wrong.
+
+## Protocol Stewardship
+
+The x402 protocol was authored by Rui Da Silva and is maintained through the canonical specification repository:
+
+https://github.com/ruidasilva/merkleworks-x402-spec
+
+This repository contains the reference gateway implementation used to demonstrate and test the protocol in production environments.
+
+The protocol specification is intentionally maintained independently of any specific implementation to ensure that:
+
+- Multiple compatible implementations can exist
+- The protocol remains infrastructure-neutral
+- Specification governance remains stable over time
+
+Implementations must conform to the specification. The specification does not change to accommodate implementation behavior.
 
 ## Quick Start
 
@@ -30,7 +99,7 @@ make demo
 make deploy
 ```
 
-### 3. Test the Payment Flow
+### 3. Test the Settlement Flow
 ```bash
 make client
 # or
@@ -44,56 +113,96 @@ Visit: http://localhost:8402/
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                        x402 Gateway                         │
+│                   x402 Settlement Gateway                    │
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
 │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    │
 │  │  Gatekeeper │    │  Delegator  │    │  Dashboard  │    │
-│  │  (402 flow) │    │ (TX settle) │    │  (React UI) │    │
+│  │  (402 flow) │    │ (fee-only)  │    │  (React UI) │    │
 │  └──────┬──────┘    └──────┬──────┘    └──────┬──────┘    │
 │         │                  │                  │            │
 │  ┌──────┴──────────────────┴──────────────────┴──────┐    │
-│  │                    UTXO Pools                      │    │
-│  │         ┌────────────┐  ┌────────────┐            │    │
-│  │         │ Nonce Pool │  │  Fee Pool  │            │    │
-│  │         └────────────┘  └────────────┘            │    │
+│  │                   UTXO Pools                       │    │
+│  │       ┌──────────────┐  ┌──────────────┐          │    │
+│  │       │  Nonce UTXO  │  │  Fee UTXO   │           │    │
+│  │       │    Pool      │  │    Pool     │            │    │
+│  │       └──────────────┘  └──────────────┘          │    │
 │  └────────────────────────────────────────────────────┘    │
 │                           │                                 │
 │              ┌────────────┴────────────┐                   │
 │              │    Redis / In-Memory    │                   │
+│              │   (operational store)   │                   │
 │              └─────────────────────────┘                   │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## Payment Flow
+### Component Roles
+
+**Gatekeeper**
+- Issues challenges containing a nonce UTXO, price, payee, expiry, and request binding
+- Binds challenge to request fields via canonical hashing
+- Verifies proofs on retry requests
+- Does not sign, construct, or modify transactions
+
+**Delegator**
+- Validates client-constructed partial transaction structure
+- Adds miner-fee inputs from the Fee UTXO Pool
+- Signs only its own fee inputs using `SIGHASH_ALL | ANYONECANPAY | FORKID (0xC1)`
+- Returns the completed transaction to the client
+- Never broadcasts
+
+**Client**
+- Constructs and signs the payment portion of the transaction
+- Submits the partial transaction to the delegator for fee completion
+- Broadcasts the completed transaction to the network
+- Retries the original request with the proof header
+
+**Network**
+- Enforces UTXO single-use at the consensus layer
+- Provides replay protection — a spent nonce UTXO cannot be spent again
+- On-chain finality is the ultimate double-spend arbiter
+
+## Settlement Flow
 
 ```
-Client                          Gateway                      Blockchain
+Client                          Gateway                      Network
   │                               │                              │
   │  1. GET /v1/expensive         │                              │
   │  ─────────────────────────►   │                              │
   │                               │                              │
   │  2. 402 + X402-Challenge      │                              │
+  │     (nonce UTXO, amount,      │                              │
+  │      payee, expiry, binding)  │                              │
   │  ◄─────────────────────────   │                              │
   │                               │                              │
   │  3. Build partial TX          │                              │
-  │     (nonce input + payee)     │                              │
+  │     (spend nonce UTXO,        │                              │
+  │      add payee output,        │                              │
+  │      sign with 0xC1)          │                              │
   │                               │                              │
   │  4. POST /delegate/x402       │                              │
   │  ─────────────────────────►   │                              │
-  │                               │  5. Add fees, sign, broadcast│
-  │                               │  ────────────────────────►   │
-  │  6. Return signed TX          │                              │
+  │                               │                              │
+  │         5. Validate structure  │                              │
+  │            Add fee inputs      │                              │
+  │            Sign fee inputs     │                              │
+  │                               │                              │
+  │  6. Return completed TX       │                              │
   │  ◄─────────────────────────   │                              │
   │                               │                              │
-  │  7. GET /v1/expensive         │                              │
+  │  7. Broadcast TX              │                              │
+  │  ──────────────────────────────────────────────────────────► │
+  │                               │                              │
+  │  8. GET /v1/expensive         │                              │
   │     + X402-Proof header       │                              │
   │  ─────────────────────────►   │                              │
   │                               │                              │
-  │  8. 200 OK + X402-Receipt     │                              │
+  │  9. Verify proof → 200 OK     │                              │
+  │     + X402-Receipt            │                              │
   │  ◄─────────────────────────   │                              │
-  │                               │                              │
 ```
+
+The client constructs, signs, and broadcasts the transaction. The delegator adds fee inputs and signs only those. It never holds client keys and never broadcasts.
 
 ## Configuration
 
@@ -113,7 +222,7 @@ BROADCASTER=mock                    # mock | woc (WhatsOnChain)
 PORT=8402
 FEE_RATE=0.001                      # sat/byte (BSV standard)
 
-# Storage (optional)
+# Storage (optional — operational aid, not correctness dependency)
 REDIS_ENABLED=false
 REDIS_URL=redis://localhost:6379
 
@@ -136,13 +245,13 @@ POOL_OPTIMAL_SIZE=5000
 |----------|--------|-------------|
 | `/v1/expensive` | GET | Example protected resource (100 sats) |
 
-### Payment Flow Endpoints
+### Settlement Flow Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/nonce/lease` | GET | Allocate a nonce UTXO |
-| `/delegate/x402` | POST | Fee delegation for partial TX |
-| `/health` | GET | Server health and pool stats |
+| `/nonce/lease` | GET | Allocate a nonce UTXO for challenge construction |
+| `/delegate/x402` | POST | Fee delegation — add fee inputs to client partial TX |
+| `/health` | GET | Server health and pool statistics |
 
 ### Fee Delegator API (Node.js Compatible)
 
@@ -161,7 +270,7 @@ POOL_OPTIMAL_SIZE=5000
 | `/api/v1/stats/summary` | GET | Aggregate statistics |
 | `/api/v1/stats/timeseries` | GET | Time-series data |
 | `/api/v1/treasury/info` | GET | Treasury status |
-| `/api/v1/treasury/fanout` | POST | Create UTXOs from funding |
+| `/api/v1/treasury/fanout` | POST | Create UTXOs from funding TX |
 | `/api/v1/events/stream` | GET | SSE event stream |
 
 ## Project Structure
@@ -177,16 +286,18 @@ x402-gateway/
 │   ├── config/          # Environment configuration
 │   ├── hdwallet/        # BIP32 HD wallet derivation
 │   ├── pool/            # UTXO pool management (Memory/Redis)
-│   ├── gatekeeper/      # HTTP 402 middleware & verification
-│   ├── delegator/       # Transaction settlement
-│   ├── feedelegator/    # Fee delegation API
-│   ├── challenge/       # Challenge/proof protocol
-│   ├── replay/          # Replay attack prevention
+│   ├── gatekeeper/      # HTTP 402 middleware and proof verification
+│   ├── delegator/       # Fee-input addition and signing (fee-only)
+│   ├── feedelegator/    # Fee delegation HTTP API
+│   ├── challenge/       # Challenge/proof construction and hashing
+│   ├── replay/          # Operational replay cache (in-memory)
 │   ├── pricing/         # Dynamic pricing
 │   ├── broadcast/       # TX broadcasting (Mock/WhatsOnChain)
-│   ├── treasury/        # Pool funding & fan-out
+│   ├── treasury/        # Pool funding and fan-out
 │   └── dashboard/       # React dashboard API
 ├── dashboard/           # React frontend source
+├── tools/
+│   └── adversary-harness/  # Adversarial protocol testing
 ├── Dockerfile
 ├── docker-compose.yml
 ├── Makefile
@@ -195,45 +306,35 @@ x402-gateway/
 
 ## Key Concepts
 
-### Nonce Pool
-- Collection of 1-satoshi UTXOs
-- Each payment requires spending one nonce
-- Provides unique identity for each transaction
-- Leased to clients with TTL (default 5 minutes)
+### Nonce UTXO Pool
+- Collection of 1-satoshi UTXOs used as challenge identity
+- Each challenge references exactly one nonce UTXO that the client must spend
+- Single-use is enforced by the network: a spent UTXO cannot be spent again
+- Leased to clients with a configurable TTL (default 5 minutes)
+- Reclaim loop recovers expired leases every 30 seconds (operational, not correctness-critical)
 
-### Fee Pool
-- Collection of 1-satoshi UTXOs for miner fees
-- Server adds fee inputs to client transactions
-- Uses `SIGHASH_ALL | ANYONECANPAY | FORKID (0xC1)`
-- Allows signing without invalidating client signatures
-
-### Delegator
-- Core settlement primitive
-- Validates partial transactions
-- Adds fee inputs and signs them
-- Broadcasts to network
-- Marks UTXOs as spent
-
-### Gatekeeper
-- HTTP middleware for 402 flow
-- Issues challenges with nonce UTXOs
-- Verifies proofs (does NOT call delegator)
-- Validates request binding (method, path, domain, body, headers)
-- Prevents replay attacks
+### Fee UTXO Pool
+- Collection of 1-satoshi UTXOs consumed by the delegator to pay miner fees
+- Delegator adds fee inputs to the client's partial transaction
+- Fee inputs are signed with `SIGHASH_ALL | ANYONECANPAY | FORKID (0xC1)`
+- This sighash allows the delegator to sign without invalidating the client's existing signatures
 
 ### Challenge
 Contains:
-- Nonce UTXO (client must spend)
+- Nonce UTXO outpoint (client must spend this)
 - Amount (price in satoshis)
-- Payee (payment destination)
+- Payee address (settlement destination)
 - Expiry (validity period)
-- Request binding (prevents replay across endpoints)
+- Request binding (canonical hash of method, path, domain, query, headers, body)
 
 ### Proof
 Contains:
-- Complete signed transaction
+- Complete signed transaction (spending the nonce UTXO)
 - Challenge hash reference
-- Request binding verification
+- Request binding for verification
+
+### Sighash 0xC1
+`SIGHASH_ALL | ANYONECANPAY | FORKID` — the client signs all outputs but only its own input. The delegator can then append fee inputs without breaking the client's signature. The delegator signs its fee inputs the same way.
 
 ## Docker Deployment
 
@@ -248,7 +349,7 @@ docker compose up -d --build
 
 The `docker-compose.yml` sets:
 - Build context to parent directory
-- Redis for persistent pools
+- Redis for pool indexing (operational store)
 - Environment variables from `.env`
 
 ### Manual Docker Build
@@ -264,7 +365,7 @@ docker build -f x402-gateway/Dockerfile -t x402-gateway .
 - Go 1.21+
 - Node.js 20+ (for dashboard)
 - Docker & Docker Compose (optional)
-- Redis (optional, for production)
+- Redis (optional, for persistent pool indexing)
 
 ### Build
 
@@ -311,30 +412,32 @@ make dashboard-build
 ## Security Considerations
 
 ### Replay Protection
-- Nonce UTXOs are single-use
-- Replay cache prevents double-spend
-- Both gatekeeper and delegator check independently
+- Nonce UTXOs are single-use at the network consensus layer
+- A spent nonce UTXO cannot be included in another valid transaction
+- On-chain finality is the ultimate double-spend arbiter
+- An in-memory replay cache provides an operational fast-path to reject obvious replays within a process lifetime, but is not a correctness dependency
 
 ### Request Binding
-- Proofs are bound to specific requests
-- Includes: method, path, domain, query, headers, body
-- Prevents proof reuse across different endpoints
+- Proofs are bound to the specific request that triggered the challenge
+- Binding includes: method, path, domain, query, headers, body
+- Prevents proof reuse across different endpoints or request shapes
 
 ### Key Management
 - HD wallet recommended for production
-- Separate keys for nonce, fee, and treasury pools
-- Never expose private keys in logs
+- Separate derivation paths for nonce UTXO pool, fee UTXO pool, and treasury
+- Delegator holds only the fee key — never the client's keys
+- Never expose private keys in logs or error messages
 
 ### Fee Budget
 - Optional daily fee budget limit
-- Prevents runaway spending
+- Prevents runaway fee spending if the gateway is under load
 - Set `DAILY_FEE_BUDGET` in satoshis
 
 ## Troubleshooting
 
 ### "No UTXOs available (pool exhausted)"
-- Pools need seeding with UTXOs
-- In demo mode with mock broadcaster, pools auto-seed
+- UTXO pools need seeding with 1-satoshi UTXOs
+- In demo mode with mock broadcaster, pools auto-seed on startup
 - For production, use Treasury fan-out or fund manually
 
 ### "SSE not supported" / Dashboard disconnected
@@ -348,8 +451,22 @@ make dashboard-build
 
 ## License
 
-[Your License Here]
+This project is licensed under the Apache License, Version 2.0.
+
+See [LICENSE](LICENSE) for details.
 
 ## Contributing
 
-[Contribution Guidelines]
+Contributions are welcome, but the x402 specification hierarchy must be respected.
+
+- **Tier 0** documents define frozen invariants — these are not open for debate
+- **Tier 1** documents define protocol wire semantics
+- **Tier 2** documents define the reference implementation mapping
+- Code and documentation must conform to those documents, never the reverse
+
+Protocol changes should be proposed in the [specification repository](https://github.com/ruidasilva/merkleworks-x402-spec) first.
+
+Implementation pull requests should:
+- Include tests where applicable
+- Not introduce behavior that contradicts the frozen specification
+- Open an issue before proposing major architectural changes
