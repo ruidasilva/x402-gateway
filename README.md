@@ -37,6 +37,22 @@ The specification repository contains the normative documents that govern this c
 
 **Authority hierarchy**: Tier 0 → Tier 1 → Tier 2 → Code. Documents are normative. Code conforms to documents, never the reverse. When code contradicts a spec document, the code is wrong.
 
+## Protocol Stewardship
+
+The x402 protocol was authored by Rui Da Silva and is maintained through the canonical specification repository:
+
+https://github.com/ruidasilva/merkleworks-x402-spec
+
+This repository contains the reference gateway implementation used to demonstrate and test the protocol in production environments.
+
+The protocol specification is intentionally maintained independently of any specific implementation to ensure that:
+
+- Multiple compatible implementations can exist
+- The protocol remains infrastructure-neutral
+- Specification governance remains stable over time
+
+Implementations must conform to the specification. The specification does not change to accommodate implementation behavior.
+
 ## Quick Start
 
 ### 1. Generate Keys
