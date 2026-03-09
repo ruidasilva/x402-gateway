@@ -28,7 +28,7 @@ export async function getConfig(): Promise<ConfigResponse> {
   return fetchJSON('/api/v1/config')
 }
 
-export async function updateConfig(updates: Record<string, unknown>): Promise<{ success: boolean; updated: Record<string, unknown> }> {
+export async function updateConfig(updates: Record<string, unknown>): Promise<{ success: boolean; updated: Record<string, unknown>; restart_required?: boolean; restart_reason?: string }> {
   return fetchJSON('/api/v1/config', {
     method: 'PUT',
     body: JSON.stringify(updates),

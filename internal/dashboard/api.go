@@ -82,6 +82,7 @@ func (d *DashboardAPI) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/treasury/info", d.handleTreasuryInfo())
 	mux.HandleFunc("GET /api/v1/treasury/utxos", d.handleTreasuryUTXOs())
 	mux.HandleFunc("POST /api/v1/treasury/fanout", d.handleTreasuryFanout())
+	mux.HandleFunc("POST /api/v1/treasury/sweep", d.handleTreasurySweep())
 	mux.HandleFunc("GET /api/v1/treasury/history", d.handleTreasuryHistory())
 
 	// Stats endpoints

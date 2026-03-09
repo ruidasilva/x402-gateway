@@ -103,15 +103,9 @@ func main() {
 	}
 	bcast := broadcast.NewSwappable(inner, cfg.Broadcaster)
 
-	// Create UTXO pools — either Redis-backed (production) or in-memory (demo)
-	// Three pools:
-	//   - Nonce pool: 1-sat UTXOs for replay protection (each challenge binds to one)
-	//   - Fee pool: 1-sat UTXOs for miner fees
-	//   - Payment pool: 100-sat UTXOs for service payments
-	var noncePool, feePool, paymentPool pool.Pool
-	var rdb *redis.Client // hoisted for use by treasury watcher
+	// Connect to Redis if enabled (needed for pools and/or treasury watcher)
+	var rdb *redis.Client
 	if cfg.RedisEnabled {
-		// Redis-backed pools — persistent across restarts
 		opts, err := redis.ParseURL(cfg.RedisURL)
 		if err != nil {
 			logger.Error("invalid REDIS_URL", "error", err)
@@ -119,12 +113,51 @@ func main() {
 		}
 		rdb = redis.NewClient(opts)
 
-		// Verify Redis connectivity
 		if err := rdb.Ping(context.Background()).Err(); err != nil {
 			logger.Error("cannot connect to Redis", "url", cfg.RedisURL, "error", err)
 			os.Exit(1)
 		}
 		logger.Info("connected to Redis", "url", cfg.RedisURL)
+	}
+
+	// Create UTXO pools — mode determines backend:
+	//   Demo mode (mock broadcaster):  ALWAYS in-memory (synthetic UTXOs never touch Redis)
+	//   Live mode (woc broadcaster):   Redis if enabled, else in-memory (real UTXOs only)
+	//
+	// Three pools:
+	//   - Nonce pool: 1-sat UTXOs for replay protection (each challenge binds to one)
+	//   - Fee pool: 1-sat UTXOs for miner fees
+	//   - Payment pool: 100-sat UTXOs for service payments
+	var noncePool, feePool, paymentPool pool.Pool
+	if demoMode {
+		// Demo mode — always in-memory so synthetic UTXOs never contaminate Redis
+		np, err := pool.NewMemoryPool(keys.NonceKey, mainnet, cfg.LeaseTTL, bcast)
+		if err != nil {
+			logger.Error("failed to create nonce pool", "error", err)
+			os.Exit(1)
+		}
+		noncePool = np
+
+		fp, err := pool.NewMemoryPool(keys.FeeKey, mainnet, cfg.LeaseTTL, bcast)
+		if err != nil {
+			logger.Error("failed to create fee pool", "error", err)
+			os.Exit(1)
+		}
+		feePool = fp
+
+		pp, err := pool.NewMemoryPool(keys.PaymentKey, mainnet, cfg.LeaseTTL, bcast)
+		if err != nil {
+			logger.Error("failed to create payment pool", "error", err)
+			os.Exit(1)
+		}
+		paymentPool = pp
+
+		// Auto-seed with synthetic UTXOs for local testing
+		seedDemoPools(noncePool, feePool, paymentPool, cfg.PoolSize, cfg.FeeRate, logger)
+		logger.Info("demo mode: in-memory pools with synthetic UTXOs")
+	} else if cfg.RedisEnabled {
+		// Live mode with Redis — clean any synthetic demo residuals, preserve real UTXOs
+		cleanDemoResiduals(rdb, logger)
 
 		np, err := pool.NewRedisPool(rdb, "nonce:", keys.NonceKey, mainnet, cfg.LeaseTTL)
 		if err != nil {
@@ -146,8 +179,9 @@ func main() {
 			os.Exit(1)
 		}
 		paymentPool = pp
+		logger.Info("live mode: Redis-backed pools (real UTXOs only)")
 	} else {
-		// In-memory pools — for demo mode and testing
+		// Live mode without Redis — in-memory, empty (user must fan-out to populate)
 		np, err := pool.NewMemoryPool(keys.NonceKey, mainnet, cfg.LeaseTTL, bcast)
 		if err != nil {
 			logger.Error("failed to create nonce pool", "error", err)
@@ -168,11 +202,7 @@ func main() {
 			os.Exit(1)
 		}
 		paymentPool = pp
-	}
-
-	// Demo mode — auto-seed pools with synthetic UTXOs when using MockBroadcaster.
-	if demoMode {
-		seedDemoPools(noncePool, feePool, paymentPool, cfg.PoolSize, cfg.FeeRate, logger)
+		logger.Info("live mode: in-memory pools (empty — use Treasury fan-out to populate)")
 	}
 
 	// Create Treasury UTXO watcher (polls WoC for unspent UTXOs)
@@ -353,6 +383,7 @@ func main() {
 		paymentKey:  keys.PaymentKey,
 		noncePool:   noncePool,
 		paymentPool: paymentPool,
+		broadcaster: bcast,
 	}, deleg, payeeLockingScriptHex))
 	mux.HandleFunc("GET /demo/events", handleEvents(eventBus)) // backward compat
 	mux.HandleFunc("GET /demo/info", handleDemoInfo(cfg, noncePool, feePool, paymentPool, payeeAddr))

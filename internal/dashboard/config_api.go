@@ -5,7 +5,6 @@
 // You may obtain a copy of the License at
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
-//
 
 
 package dashboard
@@ -120,6 +119,9 @@ func (d *DashboardAPI) handleUpdateConfig() http.HandlerFunc {
 			updated["poolOptimalSize"] = d.cfg.PoolOptimalSize
 		}
 
+		restartRequired := false
+		restartReason := ""
+
 		if req.Broadcaster != nil {
 			newMode := *req.Broadcaster
 			if newMode != "mock" && newMode != "woc" {
@@ -137,6 +139,12 @@ func (d *DashboardAPI) handleUpdateConfig() http.HandlerFunc {
 				}
 				d.cfg.Broadcaster = newMode
 				updated["broadcaster"] = newMode
+
+				// Pool backends differ between demo (in-memory) and live (Redis) mode.
+				// The broadcaster hot-swap takes effect immediately, but pools remain
+				// on the original backend until restart.
+				restartRequired = true
+				restartReason = "Pool storage differs between demo and live mode. Restart the gateway to switch pool backends and clean up synthetic UTXOs."
 			}
 		}
 
@@ -147,9 +155,14 @@ func (d *DashboardAPI) handleUpdateConfig() http.HandlerFunc {
 			return
 		}
 
-		writeJSON(w, http.StatusOK, map[string]any{
+		resp := map[string]any{
 			"success": true,
 			"updated": updated,
-		})
+		}
+		if restartRequired {
+			resp["restart_required"] = true
+			resp["restart_reason"] = restartReason
+		}
+		writeJSON(w, http.StatusOK, resp)
 	}
 }

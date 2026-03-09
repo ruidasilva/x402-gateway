@@ -16,6 +16,7 @@ export default function SettingsTab() {
   const { data: config, refresh } = useApi(fetcher)
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+  const [restartWarning, setRestartWarning] = useState<string | null>(null)
 
   // Editable fields
   const [feeRate, setFeeRate] = useState<string>('')
@@ -49,8 +50,14 @@ export default function SettingsTab() {
         setMessage({ type: 'error', text: 'No changes to save' })
         return
       }
-      await updateConfig(updates)
+      const result = await updateConfig(updates)
       setMessage({ type: 'success', text: 'Configuration updated successfully' })
+
+      // Check if server signalled a restart is needed (e.g. broadcaster mode switch)
+      if (result.restart_required) {
+        setRestartWarning(result.restart_reason || 'Restart the gateway to apply pool backend changes.')
+      }
+
       refresh()
     } catch (err) {
       setMessage({ type: 'error', text: err instanceof Error ? err.message : String(err) })
@@ -70,6 +77,24 @@ export default function SettingsTab() {
       <div className="tab-header">
         <h2 className="tab-title">Settings</h2>
       </div>
+
+      {restartWarning && (
+        <div
+          style={{
+            padding: '12px 16px',
+            marginBottom: 16,
+            borderRadius: 8,
+            background: 'rgba(245, 158, 11, 0.12)',
+            border: '1px solid rgba(245, 158, 11, 0.35)',
+            color: '#f59e0b',
+            fontSize: 13,
+            lineHeight: 1.5,
+          }}
+        >
+          <strong style={{ display: 'block', marginBottom: 4 }}>Restart Required</strong>
+          {restartWarning}
+        </div>
+      )}
 
       {message && (
         <div className={`alert alert-${message.type}`}>{message.text}</div>

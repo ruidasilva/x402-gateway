@@ -288,3 +288,72 @@ func (d *DashboardAPI) handleTreasuryHistory() http.HandlerFunc {
 		})
 	}
 }
+
+// SweepRequest is the request body for POST /api/v1/treasury/sweep.
+type SweepRequestAPI struct {
+	SigningKey string              `json:"signingKey"` // "nonce", "fee", "payment", or "treasury"
+	Inputs     []treasury.SweepInput `json:"inputs"`   // UTXOs to sweep
+}
+
+// handleTreasurySweep sweeps UTXOs from a pool address back to the treasury.
+func (d *DashboardAPI) handleTreasurySweep() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req SweepRequestAPI
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "invalid request body: " + err.Error(),
+			})
+			return
+		}
+
+		if len(req.Inputs) == 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "at least one input is required",
+			})
+			return
+		}
+
+		// Determine signing key
+		var signingKey = d.keys.TreasuryKey
+		switch req.SigningKey {
+		case "nonce":
+			signingKey = d.keys.NonceKey
+		case "fee":
+			signingKey = d.keys.FeeKey
+		case "payment":
+			signingKey = d.keys.PaymentKey
+		case "treasury", "":
+			signingKey = d.keys.TreasuryKey
+		default:
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "signingKey must be 'treasury', 'nonce', 'fee', or 'payment'",
+			})
+			return
+		}
+
+		result, err := treasury.BuildSweep(
+			signingKey,
+			d.mainnet,
+			treasury.SweepRequest{
+				Inputs:      req.Inputs,
+				Destination: d.keys.TreasuryAddress,
+				FeeRate:     d.cfg.FeeRate,
+			},
+			d.broadcaster,
+		)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"error": fmt.Sprintf("sweep failed: %s", err),
+			})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"success":    true,
+			"txid":       result.TxID,
+			"inputSats":  result.InputSats,
+			"outputSats": result.OutputSats,
+			"fee":        result.Fee,
+		})
+	}
+}
