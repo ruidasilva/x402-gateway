@@ -95,8 +95,10 @@ func ComputeHash(c *Challenge) (string, error) {
 }
 
 // Encode serializes a challenge to base64url for the X402-Challenge header.
+// Uses canonical (sorted-key) JSON so the client can SHA-256 the decoded bytes
+// and obtain the same hash the server stored in the challenge cache.
 func Encode(c *Challenge) (string, error) {
-	data, err := json.Marshal(c)
+	data, err := CanonicalJSON(c)
 	if err != nil {
 		return "", err
 	}
