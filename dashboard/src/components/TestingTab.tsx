@@ -237,11 +237,11 @@ export default function TestingTab() {
       const delegatorInputs = Math.max(totalInputs - 1, 0) // input[0] = nonce, rest = delegator
       setSettlementDetails((prev) => ({ ...prev, txid, delegatorInputs }))
 
-      updateStep(2, { status: 'success', detail: `txid: ${txid.slice(0, 16)}...` })
+      updateStep(2, { status: 'success', detail: `txid: ${txid}` })
       updateTimeline('delegator', {
         status: 'success',
         timestamp: Date.now(),
-        details: `txid: ${txid.slice(0, 16)}...`,
+        details: `txid: ${txid}`,
         meta: { delegatorUrl, fee_inputs: String(delegatorInputs) },
       })
 
@@ -267,7 +267,7 @@ export default function TestingTab() {
         try {
           const broadcastResult = await broadcastTransaction('/api/v1/broadcast', completedTxHex)
           setResponses((prev) => ({ ...prev, 3: broadcastResult }))
-          updateStep(3, { status: 'success', detail: `Broadcast OK: ${broadcastResult.txid?.slice(0, 16)}...` })
+          updateStep(3, { status: 'success', detail: `Broadcast OK: ${broadcastResult.txid}` })
           setSettlementDetails((prev) => ({
             ...prev,
             broadcastStatus: 'Broadcast to BSV network',
@@ -276,7 +276,7 @@ export default function TestingTab() {
           updateTimeline('broadcast', {
             status: 'success',
             timestamp: broadcastTime,
-            details: `txid: ${broadcastResult.txid?.slice(0, 16)}...`,
+            details: `txid: ${broadcastResult.txid}`,
             meta: { mode: 'woc', txid: broadcastResult.txid },
           })
         } catch (err) {
@@ -604,24 +604,20 @@ Client (Dashboard)
                   </div>
                   {step.detail && (
                     <div className="step-detail">
-                      {step.detail}
-                      {/* Goal 4: WoC explorer link for txid */}
-                      {i === 2 && settlementDetails.txid && !isDemo && config?.network && (
-                        <a
-                          href={wocTxUrl(config.network, settlementDetails.txid)}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          style={{
-                            display: 'inline-block',
-                            marginLeft: 8,
-                            fontSize: 11,
-                            color: 'var(--accent-blue)',
-                            textDecoration: 'none',
-                          }}
-                        >
-                          View on WoC ↗
-                        </a>
-                      )}
+                      {/* For steps with txid (delegator=2, broadcast=3), make the txid a clickable WoC link */}
+                      {(i === 2 || i === 3) && settlementDetails.txid && !isDemo && config?.network ? (
+                        <>
+                          {step.detail.replace(settlementDetails.txid, '').replace(/txid:\s*/, 'txid: ').replace(/Broadcast OK:\s*/, 'Broadcast OK: ')}
+                          <a
+                            href={wocTxUrl(config.network, settlementDetails.txid)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{ color: 'var(--accent-blue)', textDecoration: 'none' }}
+                          >
+                            {settlementDetails.txid} ↗
+                          </a>
+                        </>
+                      ) : step.detail}
                     </div>
                   )}
                   {responses[i] && (
@@ -699,18 +695,14 @@ Client (Dashboard)
             {/* Challenge Hash */}
             <DetailCell
               label="Challenge Hash"
-              value={settlementDetails.challengeHash
-                ? `${settlementDetails.challengeHash.slice(0, 16)}...${settlementDetails.challengeHash.slice(-8)}`
-                : '—'}
+              value={settlementDetails.challengeHash || '—'}
               mono
             />
 
             {/* Nonce UTXO */}
             <DetailCell
               label="Nonce UTXO"
-              value={settlementDetails.nonceUtxo
-                ? `${settlementDetails.nonceUtxo.slice(0, 16)}...:${settlementDetails.nonceUtxo.split(':').pop()}`
-                : '—'}
+              value={settlementDetails.nonceUtxo || '—'}
               mono
             />
 
@@ -725,9 +717,7 @@ Client (Dashboard)
             {/* Transaction ID */}
             <DetailCell
               label="Transaction ID"
-              value={settlementDetails.txid
-                ? `${settlementDetails.txid.slice(0, 16)}...`
-                : '—'}
+              value={settlementDetails.txid || '—'}
               mono
               link={settlementDetails.txid && !isDemo && config?.network
                 ? wocTxUrl(config.network, settlementDetails.txid)

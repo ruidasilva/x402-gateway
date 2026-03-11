@@ -443,7 +443,7 @@ select.form-input {
 
 .step-content { flex: 1; }
 .step-title { font-size: 13px; font-weight: 600; }
-.step-detail { font-size: 12px; color: var(--text-muted); margin-top: 4px; font-family: var(--font-mono); }
+.step-detail { font-size: 12px; color: var(--text-muted); margin-top: 4px; font-family: var(--font-mono); word-break: break-all; }
 
 /* JSON viewer */
 .json-view {
