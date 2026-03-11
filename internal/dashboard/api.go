@@ -85,6 +85,9 @@ func (d *DashboardAPI) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/treasury/sweep", d.handleTreasurySweep())
 	mux.HandleFunc("GET /api/v1/treasury/history", d.handleTreasuryHistory())
 
+	// Broadcast endpoint (proxies to configured broadcaster for dashboard testing)
+	mux.HandleFunc("POST /api/v1/broadcast", d.handleBroadcast())
+
 	// Stats endpoints
 	mux.HandleFunc("GET /api/v1/stats/summary", d.handleStatsSummary())
 	mux.HandleFunc("GET /api/v1/stats/timeseries", d.handleStatsTimeseries())

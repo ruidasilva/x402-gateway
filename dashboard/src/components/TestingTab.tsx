@@ -14,6 +14,7 @@ import {
   decodeChallenge,
   delegateTransaction,
   buildCompleteProof,
+  broadcastTransaction,
 } from '../api'
 import type { ChallengeData, ConfigResponse } from '../types'
 import SettlementTimeline, {
@@ -262,19 +263,34 @@ export default function TestingTab() {
           meta: { mode: 'mock', note: 'Tx accepted without broadcast' },
         })
       } else {
-        setResponses((prev) => ({ ...prev, 3: { skipped: true, reason: 'Dashboard does not broadcast in live mode — use client SDK' } }))
-        updateStep(3, { status: 'skipped', detail: 'Skipped — use client SDK for live broadcast' })
-        setSettlementDetails((prev) => ({
-          ...prev,
-          broadcastStatus: 'Skipped (live — use SDK)',
-          mempoolVisibility: 'Pending verification',
-        }))
-        updateTimeline('broadcast', {
-          status: 'success',
-          timestamp: broadcastTime,
-          details: 'Skipped (live mode)',
-          meta: { mode: 'woc', note: 'Client SDK broadcasts in production' },
-        })
+        // Live mode — broadcast via gateway proxy (avoids CORS issues with WoC)
+        try {
+          const broadcastResult = await broadcastTransaction('/api/v1/broadcast', completedTxHex)
+          setResponses((prev) => ({ ...prev, 3: broadcastResult }))
+          updateStep(3, { status: 'success', detail: `Broadcast OK: ${broadcastResult.txid?.slice(0, 16)}...` })
+          setSettlementDetails((prev) => ({
+            ...prev,
+            broadcastStatus: 'Broadcast to BSV network',
+            mempoolVisibility: 'Pending — polling...',
+          }))
+          updateTimeline('broadcast', {
+            status: 'success',
+            timestamp: broadcastTime,
+            details: `txid: ${broadcastResult.txid?.slice(0, 16)}...`,
+            meta: { mode: 'woc', txid: broadcastResult.txid },
+          })
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err)
+          setResponses((prev) => ({ ...prev, 3: { error: errMsg } }))
+          updateStep(3, { status: 'error', detail: `Broadcast failed: ${errMsg}` })
+          updateTimeline('broadcast', {
+            status: 'error',
+            timestamp: broadcastTime,
+            details: errMsg,
+            meta: { mode: 'woc' },
+          })
+          return
+        }
       }
 
       // ── Step 5: Build X402-Proof header (client-side only) ──
