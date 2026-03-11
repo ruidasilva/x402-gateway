@@ -8,7 +8,7 @@
 //
 
 import { useState, useCallback } from 'react'
-import { getTreasuryInfo, triggerFanout, getFanoutHistory, getTreasuryUTXOs, getConfig, sweepRevenue } from '../api'
+import { getTreasuryInfo, triggerFanout, getFanoutHistory, getTreasuryUTXOs, getConfig, sweepRevenue, reconcilePools } from '../api'
 import { useApi } from '../hooks/useApi'
 import type { TreasuryUTXO, ConfigResponse } from '../types'
 import PoolStats from './PoolStats'
@@ -34,6 +34,29 @@ export default function TreasuryTab() {
   const [inputMode, setInputMode] = useState<'select' | 'manual'>('select')
   const [sweeping, setSweeping] = useState(false)
   const [sweepResult, setSweepResult] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+  const [reconciling, setReconciling] = useState(false)
+  const [reconcileResult, setReconcileResult] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+
+  async function handleReconcile() {
+    setReconciling(true)
+    setReconcileResult(null)
+    try {
+      const res = await reconcilePools()
+      const details = res.pools.map(p =>
+        p.error ? `${p.pool}: error (${p.error})` : `${p.pool}: ${p.valid} valid, ${p.marked_spent} zombies removed`
+      ).join(' | ')
+      if (res.total_zombies > 0) {
+        setReconcileResult({ type: 'success', text: `Reconciled: ${res.total_zombies} zombie UTXOs marked spent. ${details}` })
+      } else {
+        setReconcileResult({ type: 'success', text: `All pools clean — no zombie UTXOs found. ${details}` })
+      }
+      refreshInfo()
+    } catch (err) {
+      setReconcileResult({ type: 'error', text: err instanceof Error ? err.message : String(err) })
+    } finally {
+      setReconciling(false)
+    }
+  }
 
   async function handleSweepRevenue() {
     setSweeping(true)
@@ -285,6 +308,28 @@ export default function TreasuryTab() {
           </div>
         )}
       </div>
+
+      {/* Pool Reconciliation */}
+      {!demoMode && (
+        <div className="card">
+          <div className="card-header">
+            <span className="card-title">Pool Integrity</span>
+            <span className="card-subtitle">check UTXOs against blockchain</span>
+          </div>
+          <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>
+            Verifies all pool UTXOs still exist on-chain. Removes &quot;zombie&quot; UTXOs that were spent
+            on-chain but not properly tracked — these cause broadcast failures (&quot;Missing inputs&quot;).
+          </div>
+          {reconcileResult && (
+            <div className={`alert alert-${reconcileResult.type}`} style={{ marginBottom: 12 }}>
+              {reconcileResult.text}
+            </div>
+          )}
+          <button className="btn btn-primary" onClick={handleReconcile} disabled={reconciling}>
+            {reconciling ? <><span className="spinner" /> Checking...</> : 'Reconcile Pools'}
+          </button>
+        </div>
+      )}
 
       {/* Available Treasury UTXOs */}
       <div className="card">

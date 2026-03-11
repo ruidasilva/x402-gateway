@@ -75,6 +75,15 @@ export async function sweepRevenue(): Promise<{ success: boolean; txid: string; 
   return fetchJSON('/api/v1/treasury/sweep-revenue', { method: 'POST' })
 }
 
+// Pool reconciliation (checks UTXOs against blockchain, marks zombies as spent)
+export async function reconcilePools(): Promise<{
+  success: boolean
+  pools: { pool: string; address: string; checked: number; valid: number; marked_spent: number; error?: string }[]
+  total_zombies: number
+}> {
+  return fetchJSON('/api/v1/pools/reconcile', { method: 'POST' })
+}
+
 // Health
 export async function getHealth(): Promise<Record<string, unknown>> {
   return fetchJSON('/health')
