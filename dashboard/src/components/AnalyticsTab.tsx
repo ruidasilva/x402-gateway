@@ -140,7 +140,7 @@ export default function AnalyticsTab() {
           </div>
           <div className="card">
             <div className="card-header">
-              <span className="card-title">Payment Pool Utilization</span>
+              <span className="card-title">Revenue Utilization</span>
             </div>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
               <span className="stat-value">

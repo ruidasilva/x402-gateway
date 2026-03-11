@@ -280,16 +280,23 @@ export default function TestingTab() {
             meta: { mode: 'woc', txid: broadcastResult.txid },
           })
         } catch (err) {
+          // Broadcast failed — continue the flow instead of stopping.
+          // The proof submission (Step 6) will likely return 202 (pending)
+          // since the tx isn't in mempool, but we let the user see the full flow.
           const errMsg = err instanceof Error ? err.message : String(err)
           setResponses((prev) => ({ ...prev, 3: { error: errMsg } }))
-          updateStep(3, { status: 'error', detail: `Broadcast failed: ${errMsg}` })
+          updateStep(3, { status: 'error', detail: `Broadcast failed: ${errMsg}. Continuing flow...` })
+          setSettlementDetails((prev) => ({
+            ...prev,
+            broadcastStatus: 'Broadcast failed (continuing)',
+            mempoolVisibility: 'Unlikely — tx not broadcast',
+          }))
           updateTimeline('broadcast', {
             status: 'error',
             timestamp: broadcastTime,
             details: errMsg,
-            meta: { mode: 'woc' },
+            meta: { mode: 'woc', note: 'Continuing to proof step despite broadcast failure' },
           })
-          return
         }
       }
 

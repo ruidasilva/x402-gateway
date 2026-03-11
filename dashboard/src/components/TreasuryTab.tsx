@@ -8,7 +8,7 @@
 //
 
 import { useState, useCallback } from 'react'
-import { getTreasuryInfo, triggerFanout, getFanoutHistory, getTreasuryUTXOs, getConfig } from '../api'
+import { getTreasuryInfo, triggerFanout, getFanoutHistory, getTreasuryUTXOs, getConfig, sweepRevenue } from '../api'
 import { useApi } from '../hooks/useApi'
 import type { TreasuryUTXO, ConfigResponse } from '../types'
 import PoolStats from './PoolStats'
@@ -32,6 +32,23 @@ export default function TreasuryTab() {
   const [running, setRunning] = useState(false)
   const [result, setResult] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const [inputMode, setInputMode] = useState<'select' | 'manual'>('select')
+  const [sweeping, setSweeping] = useState(false)
+  const [sweepResult, setSweepResult] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+
+  async function handleSweepRevenue() {
+    setSweeping(true)
+    setSweepResult(null)
+    try {
+      const res = await sweepRevenue()
+      setSweepResult({ type: 'success', text: `Swept ${res.inputCount} UTXOs (${res.inputSats} sats) to treasury (txid: ${res.txid})` })
+      refreshInfo()
+      refreshUTXOs()
+    } catch (err) {
+      setSweepResult({ type: 'error', text: err instanceof Error ? err.message : String(err) })
+    } finally {
+      setSweeping(false)
+    }
+  }
 
   function selectUTXO(utxo: TreasuryUTXO) {
     setFundingTxid(utxo.txid)
@@ -221,8 +238,52 @@ export default function TreasuryTab() {
       {/* Pool status */}
       <div className="grid grid-3">
         {info.noncePool && <PoolStats label="Nonce" stats={info.noncePool} />}
-        {info.feePool && <PoolStats label="Fee" stats={info.feePool} />}
-        {info.paymentPool && <PoolStats label="Payment" stats={info.paymentPool} />}
+        {info.feePool && <PoolStats label="Fee" stats={info.feePool} configuredUtxoValue={config?.feeUTXOSats} />}
+        {info.paymentPool && (
+          <div className="card">
+            <div className="card-header">
+              <span className="card-title">Revenue</span>
+              <span className="card-subtitle">incoming payments</span>
+            </div>
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: '1fr 1fr',
+              gap: 8,
+              marginBottom: 12,
+              padding: '10px 12px',
+              background: 'var(--bg-primary)',
+              borderRadius: 'var(--radius)',
+              border: '1px solid var(--border)',
+            }}>
+              <div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.3px' }}>
+                  Payments
+                </div>
+                <div style={{ fontSize: 16, fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--accent-blue)', marginTop: 2 }}>
+                  {info.paymentPool.total}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.3px' }}>
+                  Total Value
+                </div>
+                <div style={{ fontSize: 16, fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--accent-green-text)', marginTop: 2 }}>
+                  {formatSats(info.paymentPool.available * (info.paymentPool.utxo_value || 0))}
+                </div>
+              </div>
+            </div>
+            {sweepResult && <div className={`alert alert-${sweepResult.type}`} style={{ marginBottom: 8 }}>{sweepResult.text}</div>}
+            <button
+              className="btn btn-primary"
+              style={{ width: '100%', fontSize: 12 }}
+              onClick={handleSweepRevenue}
+              disabled={sweeping || info.paymentPool.available === 0}
+            >
+              {sweeping ? <span className="spinner" /> : null}
+              Sweep to Treasury
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Available Treasury UTXOs */}
@@ -339,8 +400,7 @@ export default function TreasuryTab() {
             <label className="form-label">Target Pool</label>
             <select className="form-input" value={pool} onChange={(e) => setPool(e.target.value)}>
               <option value="nonce">Nonce Pool ({formatSats(info.noncePool?.utxo_value || 1)}/UTXO)</option>
-              <option value="fee">Fee Pool ({formatSats(info.feePool?.utxo_value || 1)}/UTXO)</option>
-              <option value="payment">Payment Pool ({formatSats(info.paymentPool?.utxo_value || 100)}/UTXO)</option>
+              <option value="fee">Fee Pool ({formatSats(config?.feeUTXOSats || info.feePool?.utxo_value || 100)}/UTXO)</option>
             </select>
           </div>
           <div className="form-group">
@@ -428,8 +488,10 @@ export default function TreasuryTab() {
 
         {/* Fan-out preview */}
         {fundingSatoshis && parseInt(count) > 0 && (() => {
-          const poolStats = pool === 'nonce' ? info.noncePool : pool === 'fee' ? info.feePool : info.paymentPool
-          const outputValue = poolStats?.utxo_value || (pool === 'payment' ? 100 : 1)
+          const poolStats = pool === 'nonce' ? info.noncePool : info.feePool
+          const outputValue = pool === 'fee'
+            ? (config?.feeUTXOSats || poolStats?.utxo_value || 100)
+            : (poolStats?.utxo_value || 1)
           const outputCount = parseInt(count)
           const inputSats = parseInt(fundingSatoshis)
           const totalOutput = outputCount * outputValue

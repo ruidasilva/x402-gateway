@@ -445,6 +445,76 @@ func (d *DashboardAPI) handleTreasurySweep() http.HandlerFunc {
 	}
 }
 
+// handleSweepRevenue sweeps all available payment pool UTXOs back to the treasury address.
+func (d *DashboardAPI) handleSweepRevenue() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		utxos, err := d.paymentPool.ListAvailable()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"error": fmt.Sprintf("failed to list payment pool UTXOs: %s", err),
+			})
+			return
+		}
+		if len(utxos) == 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "no revenue UTXOs available to sweep",
+			})
+			return
+		}
+
+		// Convert pool UTXOs to sweep inputs
+		inputs := make([]treasury.SweepInput, len(utxos))
+		for i, u := range utxos {
+			inputs[i] = treasury.SweepInput{
+				TxID:     u.TxID,
+				Vout:     u.Vout,
+				Script:   u.Script,
+				Satoshis: u.Satoshis,
+			}
+		}
+
+		// Note: no watcher leasing here — payment pool UTXOs live at the payment
+		// address, not the treasury address, so the treasury watcher doesn't track them.
+		// The pool's own state (ListAvailable → MarkSpent) prevents double-spend.
+
+		result, err := treasury.BuildSweep(
+			d.keys.PaymentKey,
+			d.mainnet,
+			treasury.SweepRequest{
+				Inputs:      inputs,
+				Destination: d.keys.TreasuryAddress,
+				FeeRate:     d.cfg.FeeRate,
+			},
+			d.broadcaster,
+		)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"error": fmt.Sprintf("sweep failed: %s", err),
+			})
+			return
+		}
+
+		// Register the sweep output as a mempool UTXO in the treasury watcher
+		if d.watcher != nil {
+			d.watcher.RegisterMempool(result.OutputUTXO)
+		}
+
+		// Mark all swept UTXOs as spent in the payment pool
+		for _, u := range utxos {
+			d.paymentPool.MarkSpent(u.TxID, u.Vout)
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"success":    true,
+			"txid":       result.TxID,
+			"inputCount": len(utxos),
+			"inputSats":  result.InputSats,
+			"outputSats": result.OutputSats,
+			"fee":        result.Fee,
+		})
+	}
+}
+
 // derivePayeeLockingScriptHex converts a BSV address to a hex P2PKH locking script.
 func derivePayeeLockingScriptHex(addr string) (string, error) {
 	a, err := script.NewAddressFromString(addr)

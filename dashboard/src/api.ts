@@ -71,6 +71,10 @@ export async function getFanoutHistory(): Promise<{ success: boolean; history: F
   return fetchJSON('/api/v1/treasury/history')
 }
 
+export async function sweepRevenue(): Promise<{ success: boolean; txid: string; inputCount: number; inputSats: number; outputSats: number; fee: number }> {
+  return fetchJSON('/api/v1/treasury/sweep-revenue', { method: 'POST' })
+}
+
 // Health
 export async function getHealth(): Promise<Record<string, unknown>> {
   return fetchJSON('/health')

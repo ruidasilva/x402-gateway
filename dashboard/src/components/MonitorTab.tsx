@@ -9,7 +9,7 @@
 
 import { useCallback } from 'react'
 import type { GatewayEvent } from '../types'
-import { getStatsSummary } from '../api'
+import { getStatsSummary, getConfig } from '../api'
 import { useApi } from '../hooks/useApi'
 import PoolStats from './PoolStats'
 import EventLog from './EventLog'
@@ -31,7 +31,9 @@ function formatUptime(seconds: number): string {
 
 export default function MonitorTab({ events, connected, clearEvents }: Props) {
   const fetcher = useCallback(() => getStatsSummary(), [])
+  const configFetcher = useCallback(() => getConfig(), [])
   const { data: stats } = useApi(fetcher, 5000)
+  const { data: config } = useApi(configFetcher, 30000)
 
   return (
     <div>
@@ -75,8 +77,41 @@ export default function MonitorTab({ events, connected, clearEvents }: Props) {
       <div className="grid grid-2">
         <div>
           {stats?.noncePool && <PoolStats label="Nonce" stats={stats.noncePool} />}
-          {stats?.feePool && <PoolStats label="Fee" stats={stats.feePool} />}
-          {stats?.paymentPool && <PoolStats label="Payment" stats={stats.paymentPool} />}
+          {stats?.feePool && <PoolStats label="Fee" stats={stats.feePool} configuredUtxoValue={config?.feeUTXOSats} />}
+          {stats?.paymentPool && (
+            <div className="card">
+              <div className="card-header">
+                <span className="card-title">Revenue</span>
+                <span className="card-subtitle">incoming payments</span>
+              </div>
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: '1fr 1fr',
+                gap: 8,
+                padding: '10px 12px',
+                background: 'var(--bg-primary)',
+                borderRadius: 'var(--radius)',
+                border: '1px solid var(--border)',
+              }}>
+                <div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.3px' }}>
+                    Payments
+                  </div>
+                  <div style={{ fontSize: 16, fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--accent-blue)', marginTop: 2 }}>
+                    {stats.paymentPool.total}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.3px' }}>
+                    Total Value
+                  </div>
+                  <div style={{ fontSize: 16, fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--accent-green-text)', marginTop: 2 }}>
+                    {stats.paymentPool.available * (stats.paymentPool.utxo_value || 0)} sats
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
         <div>
           <div className="card">

@@ -46,6 +46,9 @@ type Pool interface {
 	// LockingScriptHex returns the P2PKH locking script hex for the pool address.
 	LockingScriptHex() (string, error)
 
+	// ListAvailable returns all UTXOs in the available state (read-only, no leasing).
+	ListAvailable() ([]UTXO, error)
+
 	// StartReclaimLoop starts a background goroutine that reclaims expired leases.
 	StartReclaimLoop(interval time.Duration, stop <-chan struct{})
 }

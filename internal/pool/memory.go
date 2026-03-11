@@ -294,6 +294,20 @@ func (p *MemoryPool) StartReclaimLoop(interval time.Duration, stop <-chan struct
 	}()
 }
 
+// ListAvailable returns all UTXOs in the available state (read-only, no leasing).
+func (p *MemoryPool) ListAvailable() ([]UTXO, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	utxos := make([]UTXO, 0)
+	for _, u := range p.utxos {
+		if u.Status == StatusAvailable {
+			utxos = append(utxos, *u)
+		}
+	}
+	return utxos, nil
+}
+
 // Stats returns pool statistics including UTXO denomination.
 func (p *MemoryPool) Stats() PoolStats {
 	p.mu.Lock()

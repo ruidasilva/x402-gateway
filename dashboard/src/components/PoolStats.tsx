@@ -12,6 +12,7 @@ import type { PoolStats as PoolStatsType } from '../types'
 interface Props {
   label: string
   stats: PoolStatsType
+  configuredUtxoValue?: number // override utxo_value from config (e.g. FEE_UTXO_SATS)
 }
 
 function formatSats(sats: number): string {
@@ -27,15 +28,15 @@ function healthBadge(available: number): { text: string; color: string; bg: stri
   return { text: 'Healthy', color: 'var(--accent-green-text)', bg: 'rgba(35, 134, 54, 0.12)', border: 'rgba(35, 134, 54, 0.3)' }
 }
 
-export default function PoolStats({ label, stats }: Props) {
+export default function PoolStats({ label, stats, configuredUtxoValue }: Props) {
   const total = stats.total || 1 // avoid div by zero
   const availPct = (stats.available / total) * 100
   const leasedPct = (stats.leased / total) * 100
   const spentPct = (stats.spent / total) * 100
 
-  const utxoValue = stats.utxo_value || 0
+  const utxoValue = configuredUtxoValue || stats.utxo_value || 0
   const totalValue = stats.available * utxoValue
-  const capacityLabel = label === 'Payment' ? 'payments' : label === 'Fee' ? 'delegations' : 'challenges'
+  const capacityLabel = label === 'Revenue' ? 'payments received' : label === 'Fee' ? 'delegations' : 'challenges'
   const health = healthBadge(stats.available)
 
   return (

@@ -280,6 +280,12 @@ func handleProof(w http.ResponseWriter, r *http.Request, next http.Handler, proo
 				if cfg.ChallengeCache != nil {
 					cfg.ChallengeCache.Delete(proof.ChallengeSHA256)
 				}
+				// Mark nonce as spent so it's never re-leased for a new challenge.
+				// Without this, the lease TTL expiry would return the nonce to "available"
+				// even though it's been spent on-chain → subsequent broadcasts fail.
+				if cfg.NoncePool != nil {
+					cfg.NoncePool.MarkSpent(nonce.TxID, nonce.Vout)
+				}
 				w.Header().Set(StatusHeader, "accepted")
 				next.ServeHTTP(w, r)
 				return
@@ -438,6 +444,14 @@ func handleProof(w http.ResponseWriter, r *http.Request, next http.Handler, proo
 	// This runs only on the 200 path (mempool-visible or no mempool check required).
 	if cfg.ChallengeCache != nil {
 		cfg.ChallengeCache.Delete(proof.ChallengeSHA256)
+	}
+
+	// Step 14c: Mark nonce UTXO as spent in the pool so it's never re-leased.
+	// Critical: without this, the nonce lease expires → returns to "available" →
+	// next challenge picks the same nonce → broadcast fails ("Missing inputs")
+	// because the nonce UTXO was already spent on-chain.
+	if cfg.NoncePool != nil && originalChallenge.NonceUTXO != nil {
+		cfg.NoncePool.MarkSpent(originalChallenge.NonceUTXO.TxID, originalChallenge.NonceUTXO.Vout)
 	}
 
 	logger.Info("payment accepted",
