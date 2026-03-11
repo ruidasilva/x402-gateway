@@ -8,18 +8,20 @@
 //
 
 import { useState, useCallback } from 'react'
-import { getTreasuryInfo, triggerFanout, getFanoutHistory, getTreasuryUTXOs } from '../api'
+import { getTreasuryInfo, triggerFanout, getFanoutHistory, getTreasuryUTXOs, getConfig } from '../api'
 import { useApi } from '../hooks/useApi'
-import type { TreasuryUTXO } from '../types'
+import type { TreasuryUTXO, ConfigResponse } from '../types'
 import PoolStats from './PoolStats'
 
 export default function TreasuryTab() {
   const infoFetcher = useCallback(() => getTreasuryInfo(), [])
   const historyFetcher = useCallback(() => getFanoutHistory(), [])
   const utxoFetcher = useCallback(() => getTreasuryUTXOs(), [])
+  const configFetcher = useCallback(() => getConfig(), [])
   const { data: info, refresh: refreshInfo } = useApi(infoFetcher, 10000)
   const { data: historyData, refresh: refreshHistory } = useApi(historyFetcher, 10000)
   const { data: utxoData, refresh: refreshUTXOs } = useApi(utxoFetcher, 10000)
+  const { data: config } = useApi(configFetcher, 30000)
 
   const [pool, setPool] = useState('fee')
   const [count, setCount] = useState('100')
@@ -433,8 +435,9 @@ export default function TreasuryTab() {
           const totalOutput = outputCount * outputValue
           // Estimate tx size: 10 overhead + 148/input + 34/output (including change output)
           const estimatedTxSize = 10 + 148 + (outputCount + 1) * 34
-          // Fee at 1 sat/KB (0.001 sat/byte), minimum 1 sat
-          const estimatedFee = Math.max(1, Math.ceil(estimatedTxSize * 0.001))
+          // Fee rate from config (sat/byte), default 0.001 (1 sat/KB)
+          const feeRate = config?.feeRate || 0.001
+          const estimatedFee = Math.max(1, Math.ceil(estimatedTxSize * feeRate))
           const estimatedChange = inputSats - totalOutput - estimatedFee
           const insufficient = estimatedChange < 0
 
