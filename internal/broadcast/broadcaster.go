@@ -218,6 +218,10 @@ func (w *WoCBroadcaster) CheckMempool(txid string) (bool, bool, error) {
 		return true, false, nil // tx visible
 	case http.StatusNotFound:
 		return false, false, nil // tx not yet visible
+	case http.StatusTooManyRequests:
+		// Rate-limited — treat as "not yet visible" so the polling loop retries
+		// rather than aborting with a 503 error.
+		return false, false, nil
 	default:
 		// Unexpected status — treat as error
 		return false, false, fmt.Errorf("WoC mempool check returned HTTP %d", resp.StatusCode)
