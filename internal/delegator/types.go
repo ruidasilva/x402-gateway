@@ -15,8 +15,11 @@ package delegator
 // the delegator validates structure, adds fee inputs, and signs only those.
 type DelegationRequest struct {
 	// PartialTxHex is the hex-encoded partial transaction constructed by the client.
-	// It must contain: nonce input (signed with 0xC1), payment input(s) (signed with 0xC1),
-	// and payee output. The delegator will append fee inputs and sign them.
+	// Profile A: must contain nonce input (signed with 0xC1), payment input(s) (signed with 0xC1),
+	//            and payee output.
+	// Profile B: must contain nonce input (signed with 0xC3 by gateway template), sponsor
+	//            funding input(s) (signed with 0xC1), and payee output.
+	// The delegator will append fee inputs and sign them.
 	PartialTxHex string `json:"partial_tx_hex"`
 
 	// ChallengeHash is the SHA-256 of the original challenge.
@@ -31,14 +34,20 @@ type DelegationRequest struct {
 	// NonceOutpoint identifies the nonce UTXO that must appear as an input
 	// in the partial transaction. Used for replay cache lookup only.
 	NonceOutpoint *NonceOutpointRef `json:"nonce_outpoint,omitempty"`
+
+	// TemplateMode indicates this is a Profile B request where the nonce input
+	// was pre-signed by the gateway with 0xC3 (SIGHASH_SINGLE|ANYONECANPAY|FORKID).
+	// When true, input 0 accepts 0xC3 sighash; all other inputs require 0xC1.
+	TemplateMode bool `json:"template_mode,omitempty"`
 }
 
 // NonceOutpointRef identifies a nonce UTXO by its outpoint (txid:vout).
-// Unlike challenge.NonceRef, this carries only the outpoint — no satoshis
-// or locking script, since those are already embedded in the partial tx.
+// Satoshis is the nonce input's value so the delegator can account for it
+// when calculating the fee pool deficit (the nonce's 1 sat covers the miner fee).
 type NonceOutpointRef struct {
-	TxID string `json:"txid"`
-	Vout uint32 `json:"vout"`
+	TxID     string `json:"txid"`
+	Vout     uint32 `json:"vout"`
+	Satoshis uint64 `json:"satoshis,omitempty"` // nonce input value (default 1 sat)
 }
 
 // DelegationResult is returned after successful delegation.

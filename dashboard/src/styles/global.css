@@ -420,6 +420,7 @@ select.form-input {
 .flow-step.active { border-color: var(--accent-blue); }
 .flow-step.success { border-color: var(--accent-green-text); }
 .flow-step.error { border-color: var(--accent-red-text); }
+.flow-step.skipped { border-color: var(--accent-yellow); border-style: dashed; }
 
 .step-number {
   width: 24px;
@@ -438,6 +439,7 @@ select.form-input {
 .flow-step.active .step-number { background: var(--accent-blue); color: #fff; }
 .flow-step.success .step-number { background: var(--accent-green); color: #fff; }
 .flow-step.error .step-number { background: var(--accent-red); color: #fff; }
+.flow-step.skipped .step-number { background: var(--accent-yellow); color: #fff; }
 
 .step-content { flex: 1; }
 .step-title { font-size: 13px; font-weight: 600; }

@@ -21,6 +21,15 @@ type NonceRef struct {
 	LockingScriptHex string `json:"locking_script_hex"`  // hex P2PKH locking script
 }
 
+// TemplateRef carries a pre-signed transaction template for Profile B
+// (Gateway Template mode). The template contains the nonce input (signed
+// by the gateway with 0xC3) and the payment output. Sponsors extend it
+// by appending funding inputs and optional change outputs.
+type TemplateRef struct {
+	RawTxHex  string `json:"rawtx_hex"`  // hex pre-signed partial transaction
+	PriceSats uint64 `json:"price_sats"` // payment amount locked in the template
+}
+
 // Challenge is the 402 payment challenge sent to the client.
 type Challenge struct {
 	V                     string `json:"v"`                        // "1"
@@ -40,6 +49,10 @@ type Challenge struct {
 	// Nonce UTXO — binds this challenge to a specific UTXO for replay protection.
 	// The proof transaction MUST spend this outpoint as one of its inputs.
 	NonceUTXO *NonceRef `json:"nonce_utxo,omitempty"`
+
+	// Profile B: pre-signed transaction template containing the nonce input
+	// and payment output. Omitted for Profile A challenges.
+	Template *TemplateRef `json:"template,omitempty"`
 
 	// Settlement parameters (spec-defined)
 	RequireMempoolAccept  bool `json:"require_mempool_accept"`  // true = 0-conf gating

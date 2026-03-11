@@ -25,6 +25,24 @@ services:
     environment:
       REDIS_URL: redis://redis:6379
       REDIS_ENABLED: "true"
+      # Browser-accessible URL for the dashboard (the gateway never calls the delegator)
+      DELEGATOR_URL: "http://localhost:${DELEGATOR_PORT:-8403}"
+    restart: unless-stopped
+
+  x402-delegator:
+    build:
+      context: ..
+      dockerfile: x402-gateway/Dockerfile.delegator
+    ports:
+      - "${DELEGATOR_PORT:-8403}:${DELEGATOR_PORT:-8403}"
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379
+      REDIS_ENABLED: "true"
+      PORT: "${DELEGATOR_PORT:-8403}"
     restart: unless-stopped
 
 volumes:

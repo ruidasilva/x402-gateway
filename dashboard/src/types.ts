@@ -13,6 +13,8 @@ export interface PoolStats {
   available: number
   leased: number
   spent: number
+  quarantined: number // UTXOs removed by integrity check
+  utxo_value: number // denomination per UTXO (sats)
 }
 
 // Configuration response (safe — no secret keys)
@@ -32,6 +34,39 @@ export interface ConfigResponse {
   feeAddress: string
   paymentAddress: string
   treasuryAddress: string
+  templateMode: boolean
+  templatePriceSats?: number
+  feeUTXOSats: number // fee pool UTXO denomination (1–1000 sats)
+  profile: string // "A (Open Nonce)" or "B (Gateway Template)"
+  delegatorUrl: string
+  delegatorEmbedded: boolean
+  broadcasterUrl?: string
+  mode: string // "mock" or "live" — runtime mode for pool namespace
+}
+
+// Challenge data decoded from X402-Challenge header (base64url JSON)
+export interface ChallengeData {
+  v: string
+  scheme: string
+  amount_sats: number
+  payee_locking_script_hex: string
+  expires_at: number
+  domain: string
+  method: string
+  path: string
+  query: string
+  req_headers_sha256: string
+  req_body_sha256: string
+  nonce_utxo: {
+    txid: string
+    vout: number
+    satoshis: number
+    locking_script_hex: string
+  }
+  template?: {
+    rawtx_hex: string
+    price_sats: number
+  }
 }
 
 // Stats summary from Go backend
@@ -74,6 +109,7 @@ export interface TreasuryUTXO {
   vout: number
   script: string
   satoshis: number
+  status?: 'confirmed' | 'mempool'
 }
 
 // Treasury UTXOs response

@@ -40,6 +40,13 @@ import (
 	"github.com/merkle-works/x402-gateway/internal/treasury"
 )
 
+// writeJSON encodes a value as JSON and writes it to the response.
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
+}
+
 func main() {
 	// Setup structured logging
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
@@ -120,68 +127,131 @@ func main() {
 		logger.Info("connected to Redis", "url", cfg.RedisURL)
 	}
 
-	// Create UTXO pools — mode determines backend:
-	//   Demo mode (mock broadcaster):  ALWAYS in-memory (synthetic UTXOs never touch Redis)
-	//   Live mode (woc broadcaster):   Redis if enabled, else in-memory (real UTXOs only)
+	// Create UTXO pools — Redis if enabled (both mock and live), else in-memory.
+	// Mode-segregated namespaces ensure mock and live data never intersect in Redis.
 	//
 	// Three pools:
 	//   - Nonce pool: 1-sat UTXOs for replay protection (each challenge binds to one)
 	//   - Fee pool: 1-sat UTXOs for miner fees
 	//   - Payment pool: 100-sat UTXOs for service payments
+	mode := cfg.RuntimeMode()
 	var noncePool, feePool, paymentPool pool.Pool
-	if demoMode {
-		// Demo mode — always in-memory so synthetic UTXOs never contaminate Redis
-		np, err := pool.NewMemoryPool(keys.NonceKey, mainnet, cfg.LeaseTTL, bcast)
+
+	if cfg.RedisEnabled {
+		// Redis-backed pools with mode-namespaced keys (e.g. "live:nonce:", "mock:fee:")
+		detectLegacyKeys(rdb, logger)
+
+		np, err := pool.NewRedisPool(rdb, config.PoolPrefix(mode, "nonce"), keys.NonceKey, mainnet, cfg.LeaseTTL)
 		if err != nil {
 			logger.Error("failed to create nonce pool", "error", err)
 			os.Exit(1)
 		}
 		noncePool = np
 
-		fp, err := pool.NewMemoryPool(keys.FeeKey, mainnet, cfg.LeaseTTL, bcast)
+		fp, err := pool.NewRedisPool(rdb, config.PoolPrefix(mode, "fee"), keys.FeeKey, mainnet, cfg.LeaseTTL)
 		if err != nil {
 			logger.Error("failed to create fee pool", "error", err)
 			os.Exit(1)
 		}
 		feePool = fp
 
-		pp, err := pool.NewMemoryPool(keys.PaymentKey, mainnet, cfg.LeaseTTL, bcast)
+		pp, err := pool.NewRedisPool(rdb, config.PoolPrefix(mode, "payment"), keys.PaymentKey, mainnet, cfg.LeaseTTL)
 		if err != nil {
 			logger.Error("failed to create payment pool", "error", err)
 			os.Exit(1)
 		}
 		paymentPool = pp
 
-		// Auto-seed with synthetic UTXOs for local testing
-		seedDemoPools(noncePool, feePool, paymentPool, cfg.PoolSize, cfg.FeeRate, logger)
-		logger.Info("demo mode: in-memory pools with synthetic UTXOs")
-	} else if cfg.RedisEnabled {
-		// Live mode with Redis — clean any synthetic demo residuals, preserve real UTXOs
-		cleanDemoResiduals(rdb, logger)
-
-		np, err := pool.NewRedisPool(rdb, "nonce:", keys.NonceKey, mainnet, cfg.LeaseTTL)
-		if err != nil {
-			logger.Error("failed to create nonce pool", "error", err)
-			os.Exit(1)
+		// In demo mode, seed pools with synthetic UTXOs (writes to mock:* namespace)
+		if demoMode {
+			var tmplOpts templateOpts
+			if cfg.TemplateMode {
+				seedPayeeAddr := cfg.PayeeAddress
+				if seedPayeeAddr == "" {
+					seedPayeeAddr = keys.FeeAddress
+				}
+				seedPayeeScript, err := addressToLockingScriptHex(seedPayeeAddr)
+				if err != nil {
+					logger.Error("failed to derive payee script for template seeding", "error", err)
+					os.Exit(1)
+				}
+				tmplOpts = templateOpts{
+					enabled:               true,
+					nonceKey:              keys.NonceKey,
+					payeeLockingScriptHex: seedPayeeScript,
+					priceSats:             cfg.TemplatePriceSats,
+				}
+			}
+			seedDemoPools(noncePool, feePool, paymentPool, cfg.PoolSize, cfg.FeeRate, cfg.FeeUTXOSats, tmplOpts, logger)
+			if cfg.TemplateMode {
+				logger.Info("demo mode: Profile B (Gateway Template) enabled",
+					"template_price_sats", cfg.TemplatePriceSats)
+			}
 		}
-		noncePool = np
 
-		fp, err := pool.NewRedisPool(rdb, "fee:", keys.FeeKey, mainnet, cfg.LeaseTTL)
-		if err != nil {
-			logger.Error("failed to create fee pool", "error", err)
-			os.Exit(1)
-		}
-		feePool = fp
+		// Profile B: generate templates for nonce UTXOs that don't have them yet
+		if !demoMode && cfg.TemplateMode {
+			seedPayeeAddr := cfg.PayeeAddress
+			if seedPayeeAddr == "" {
+				seedPayeeAddr = keys.FeeAddress
+			}
+			seedPayeeScript, err := addressToLockingScriptHex(seedPayeeAddr)
+			if err != nil {
+				logger.Error("failed to derive payee script for template generation", "error", err)
+				os.Exit(1)
+			}
 
-		pp, err := pool.NewRedisPool(rdb, "payment:", keys.PaymentKey, mainnet, cfg.LeaseTTL)
-		if err != nil {
-			logger.Error("failed to create payment pool", "error", err)
-			os.Exit(1)
+			// List available nonce UTXOs and generate templates for any that lack one
+			available, err := np.ListAvailable()
+			if err != nil {
+				logger.Error("failed to list nonce UTXOs for template generation", "error", err)
+				os.Exit(1)
+			}
+
+			var needTemplates []pool.UTXO
+			missingCount := 0
+			stalePriceCount := 0
+			for _, u := range available {
+				if u.RawTxTemplate == "" {
+					missingCount++
+					needTemplates = append(needTemplates, u)
+				} else if u.TemplatePriceSats != cfg.TemplatePriceSats {
+					stalePriceCount++
+					needTemplates = append(needTemplates, u)
+				}
+			}
+
+			if len(needTemplates) > 0 {
+				logger.Info("generating templates for existing nonce UTXOs",
+					"total_available", len(available),
+					"missing", missingCount,
+					"stale_price", stalePriceCount,
+					"price_sats", cfg.TemplatePriceSats)
+
+				if err := treasury.GenerateTemplates(keys.NonceKey, needTemplates, seedPayeeScript, cfg.TemplatePriceSats); err != nil {
+					logger.Error("template generation failed", "error", err)
+					os.Exit(1)
+				}
+
+				// Write template metadata to Redis (without inflating pool stats)
+				if err := np.UpdateTemplates(needTemplates); err != nil {
+					logger.Error("failed to store templates in Redis", "error", err)
+					os.Exit(1)
+				}
+				logger.Info("templates generated and stored in Redis",
+					"count", len(needTemplates))
+			} else {
+				logger.Info("all nonce UTXOs already have templates",
+					"count", len(available))
+			}
 		}
-		paymentPool = pp
-		logger.Info("live mode: Redis-backed pools (real UTXOs only)")
+
+		logger.Info("Redis-backed pools initialized", "mode", mode,
+			"nonce_prefix", config.PoolPrefix(mode, "nonce"),
+			"fee_prefix", config.PoolPrefix(mode, "fee"),
+			"payment_prefix", config.PoolPrefix(mode, "payment"))
 	} else {
-		// Live mode without Redis — in-memory, empty (user must fan-out to populate)
+		// In-memory fallback (no Redis)
 		np, err := pool.NewMemoryPool(keys.NonceKey, mainnet, cfg.LeaseTTL, bcast)
 		if err != nil {
 			logger.Error("failed to create nonce pool", "error", err)
@@ -202,7 +272,54 @@ func main() {
 			os.Exit(1)
 		}
 		paymentPool = pp
-		logger.Info("live mode: in-memory pools (empty — use Treasury fan-out to populate)")
+
+		if demoMode {
+			var tmplOpts templateOpts
+			if cfg.TemplateMode {
+				seedPayeeAddr := cfg.PayeeAddress
+				if seedPayeeAddr == "" {
+					seedPayeeAddr = keys.FeeAddress
+				}
+				seedPayeeScript, err := addressToLockingScriptHex(seedPayeeAddr)
+				if err != nil {
+					logger.Error("failed to derive payee script for template seeding", "error", err)
+					os.Exit(1)
+				}
+				tmplOpts = templateOpts{
+					enabled:               true,
+					nonceKey:              keys.NonceKey,
+					payeeLockingScriptHex: seedPayeeScript,
+					priceSats:             cfg.TemplatePriceSats,
+				}
+			}
+			seedDemoPools(noncePool, feePool, paymentPool, cfg.PoolSize, cfg.FeeRate, cfg.FeeUTXOSats, tmplOpts, logger)
+			logger.Info("demo mode: in-memory pools with synthetic UTXOs")
+		} else {
+			logger.Info("live mode: in-memory pools (empty — use Treasury fan-out to populate)")
+		}
+	}
+
+	// Run local pool integrity check (enforces mode isolation in Redis)
+	if cfg.RedisEnabled {
+		for _, p := range []struct {
+			name   string
+			prefix string
+		}{
+			{"nonce", config.PoolPrefix(mode, "nonce")},
+			{"fee", config.PoolPrefix(mode, "fee")},
+			{"payment", config.PoolPrefix(mode, "payment")},
+		} {
+			result := pool.CheckIntegrity(rdb, p.prefix, mode, logger)
+			if result.Checked > 0 {
+				logger.Info("pool integrity check",
+					"pool", p.name,
+					"mode", mode,
+					"checked", result.Checked,
+					"valid", result.Valid,
+					"quarantined", result.Quarantined,
+				)
+			}
+		}
 	}
 
 	// Create Treasury UTXO watcher (polls WoC for unspent UTXOs)
@@ -229,22 +346,11 @@ func main() {
 	// Create event bus for SSE streaming to dashboard
 	eventBus := NewEventBus()
 
-	// Create replay cache (10 minute TTL, 10K entries)
-	replayCache := replay.New(10*time.Minute, 10000)
-
-	// Create delegator (the foundational settlement primitive)
-	// Delegator only adds fee inputs and signs those — client constructs partial tx
-	deleg, err := delegator.New(key, mainnet, feePool, replayCache, cfg.FeeRate)
-	if err != nil {
-		logger.Error("failed to create delegator", "error", err)
-		os.Exit(1)
-	}
-
 	// Determine payee address and locking script
 	payeeAddr := cfg.PayeeAddress
 	if payeeAddr == "" {
-		payeeAddr = feePool.Address()
-		logger.Info("no PAYEE_ADDRESS set, using delegator address", "address", payeeAddr)
+		payeeAddr = keys.FeeAddress
+		logger.Info("no PAYEE_ADDRESS set, using fee key address", "address", payeeAddr)
 	}
 
 	// Convert payee address to locking script hex
@@ -254,14 +360,33 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Create gateway replay cache (for gatekeeper proof verification)
+	replayCache := replay.New(10*time.Minute, 10000)
+
 	// Create bounded challenge cache (5 min TTL, 10K max)
 	challengeCache := gatekeeper.NewChallengeCache(5*time.Minute, 10000)
 
-	// Create fee delegator handler (Node.js-compatible POST /api/v1/tx)
-	feeDelegatorHandler, err := feedelegator.NewHandler(keys.FeeKey, mainnet, feePool, cfg.FeeRate)
-	if err != nil {
-		logger.Error("failed to create fee delegator handler", "error", err)
-		os.Exit(1)
+	// Embedded delegator (optional — for simple single-process deployments)
+	// When DELEGATOR_EMBEDDED=true, the gateway hosts delegation routes in-process.
+	// When false (default), delegation runs as a separate service (cmd/delegator).
+	var deleg *delegator.Delegator
+	var feeDelegatorHandler *feedelegator.Handler
+	if cfg.DelegatorEmbedded {
+		replayCache := replay.New(10*time.Minute, 10000)
+
+		var delegErr error
+		deleg, delegErr = delegator.New(key, mainnet, feePool, replayCache, cfg.FeeRate)
+		if delegErr != nil {
+			logger.Error("failed to create embedded delegator", "error", delegErr)
+			os.Exit(1)
+		}
+
+		feeDelegatorHandler, delegErr = feedelegator.NewHandler(keys.FeeKey, mainnet, feePool, cfg.FeeRate)
+		if delegErr != nil {
+			logger.Error("failed to create fee delegator handler", "error", delegErr)
+			os.Exit(1)
+		}
+		logger.Info("embedded delegator enabled")
 	}
 
 	// Record server start time for uptime tracking
@@ -286,6 +411,22 @@ func main() {
 		watcher.Start(stop)
 	}
 
+	// Profile B: start background template repair loop for Redis-backed nonce pool.
+	// Periodically scans for nonce UTXOs missing templates and regenerates them.
+	// Only needed for live+Redis mode — demo mode seeds templates at startup.
+	if cfg.TemplateMode && cfg.RedisEnabled {
+		if redisNoncePool, ok := noncePool.(*pool.RedisPool); ok {
+			treasury.StartTemplateRepairLoop(treasury.TemplateRepairConfig{
+				NoncePool:             redisNoncePool,
+				NonceKey:              keys.NonceKey,
+				PayeeLockingScriptHex: payeeLockingScriptHex,
+				PriceSats:             cfg.TemplatePriceSats,
+				Interval:              5 * time.Minute,
+			}, stop)
+			logger.Info("template repair loop started", "interval", "5m")
+		}
+	}
+
 	// Setup HTTP mux
 	mux := http.NewServeMux()
 
@@ -293,51 +434,53 @@ func main() {
 
 	// Health check
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		profile := "A (Open Nonce)"
+		if cfg.TemplateMode {
+			profile = "B (Gateway Template)"
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
 			"status":       "ok",
 			"version":      "1.0.0",
 			"network":      cfg.BSVNetwork,
+			"profile":      profile,
 			"nonce_pool":   noncePool.Stats(),
 			"fee_pool":     feePool.Stats(),
 			"payment_pool": paymentPool.Stats(),
 		})
 	})
 
-	// Delegation endpoint (called by client directly)
-	mux.HandleFunc("POST /delegate/x402", func(w http.ResponseWriter, r *http.Request) {
-		var req delegator.DelegationRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]any{
-				"error": "invalid request body: " + err.Error(),
-			})
-			return
-		}
-
-		// Enrich request with server-side data
-		if req.ExpectedPayeeLockingScriptHex == "" {
-			req.ExpectedPayeeLockingScriptHex = payeeLockingScriptHex
-		}
-
-		result, err := deleg.Accept(req)
-		if err != nil {
-			if delegErr, ok := err.(*delegator.DelegationError); ok {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(delegErr.Status)
-				json.NewEncoder(w).Encode(delegErr)
+	// Embedded delegator routes (only when DELEGATOR_EMBEDDED=true)
+	if cfg.DelegatorEmbedded && deleg != nil {
+		mux.HandleFunc("POST /delegate/x402", func(w http.ResponseWriter, r *http.Request) {
+			var req delegator.DelegationRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]any{
+					"error": "invalid request body: " + err.Error(),
+				})
 				return
 			}
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]any{
-				"error": err.Error(),
-			})
-			return
-		}
 
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(result)
-	})
+			// Enrich request with server-side data
+			if req.ExpectedPayeeLockingScriptHex == "" {
+				req.ExpectedPayeeLockingScriptHex = payeeLockingScriptHex
+			}
+
+			result, err := deleg.Accept(req)
+			if err != nil {
+				if delegErr, ok := err.(*delegator.DelegationError); ok {
+					writeJSON(w, delegErr.Status, delegErr)
+					return
+				}
+				writeJSON(w, http.StatusInternalServerError, map[string]any{
+					"error": err.Error(),
+				})
+				return
+			}
+
+			writeJSON(w, http.StatusOK, result)
+		})
+	}
 
 	// --- Protected endpoint (gated by x402 middleware) ---
 
@@ -365,11 +508,13 @@ func main() {
 	mux.Handle("GET /v1/expensive", gatekeeper.Middleware(gatekeeperCfg)(expensive))
 	mux.Handle("POST /v1/expensive", gatekeeper.Middleware(gatekeeperCfg)(expensive))
 
-	// --- Fee delegator API (Node.js-compatible drop-in) ---
-	mux.HandleFunc("POST /api/v1/tx", feeDelegatorHandler.HandleDelegateTx())
-	mux.HandleFunc("GET /api/utxo/stats", feeDelegatorHandler.HandleUTXOStats(cfg.RedisEnabled))
-	mux.HandleFunc("GET /api/utxo/health", feeDelegatorHandler.HandleUTXOHealth())
-	mux.HandleFunc("GET /api/health", feeDelegatorHandler.HandleHealth(startTime))
+	// --- Fee delegator API (only when embedded) ---
+	if cfg.DelegatorEmbedded && feeDelegatorHandler != nil {
+		mux.HandleFunc("POST /api/v1/tx", feeDelegatorHandler.HandleDelegateTx())
+		mux.HandleFunc("GET /api/utxo/stats", feeDelegatorHandler.HandleUTXOStats(cfg.RedisEnabled))
+		mux.HandleFunc("GET /api/utxo/health", feeDelegatorHandler.HandleUTXOHealth())
+		mux.HandleFunc("GET /api/health", feeDelegatorHandler.HandleHealth(startTime))
+	}
 
 	// --- Dashboard API (React dashboard backend) ---
 	dashAPI.RegisterRoutes(mux)
@@ -377,16 +522,8 @@ func main() {
 	// SSE event stream
 	mux.HandleFunc("GET /api/v1/events/stream", handleEvents(eventBus))
 
-	// --- Demo/Testing endpoints ---
-	mux.HandleFunc("POST /demo/build-proof", handleBuildProof(demoClientDeps{
-		nonceKey:    keys.NonceKey,
-		paymentKey:  keys.PaymentKey,
-		noncePool:   noncePool,
-		paymentPool: paymentPool,
-		broadcaster: bcast,
-	}, deleg, payeeLockingScriptHex))
-	mux.HandleFunc("GET /demo/events", handleEvents(eventBus)) // backward compat
-	mux.HandleFunc("GET /demo/info", handleDemoInfo(cfg, noncePool, feePool, paymentPool, payeeAddr))
+	// SSE event stream (backward-compat alias)
+	mux.HandleFunc("GET /demo/events", handleEvents(eventBus))
 
 	// --- React Dashboard SPA ---
 	mux.HandleFunc("GET /", handleDashboardSPA())
@@ -436,20 +573,32 @@ func main() {
 	} else {
 		fmt.Printf("  Mode:       live (%s)\n", cfg.Broadcaster)
 	}
+	if cfg.TemplateMode {
+		fmt.Printf("  Profile:    B (Gateway Template, price=%d sats, sighash=0xC3)\n", cfg.TemplatePriceSats)
+	} else {
+		fmt.Printf("  Profile:    A (Open Nonce)\n")
+	}
 	if watcher != nil {
 		fmt.Printf("  Watcher:    every %ds at %s\n", cfg.TreasuryPollInterval, keys.TreasuryAddress)
 	} else {
 		fmt.Printf("  Watcher:    disabled\n")
 	}
 	fmt.Printf("  Dashboard:  http://localhost:%d/\n", cfg.Port)
+	if cfg.DelegatorEmbedded {
+		fmt.Printf("  Delegator:  embedded (in-process)\n")
+	} else {
+		fmt.Printf("  Delegator:  external (separate service)\n")
+	}
 	fmt.Printf("\n  Endpoints:\n")
 	fmt.Printf("    GET  /health          Health check\n")
-	fmt.Printf("    POST /delegate/x402   Delegation (x402)\n")
 	fmt.Printf("    GET  /v1/expensive    Protected (100 sats)\n")
-	fmt.Printf("    POST /api/v1/tx       Fee delegator API (Node.js-compat)\n")
-	fmt.Printf("    GET  /api/utxo/stats  UTXO pool stats\n")
-	fmt.Printf("    GET  /api/utxo/health UTXO pool health\n")
-	fmt.Printf("    GET  /api/health      API health\n")
+	if cfg.DelegatorEmbedded {
+		fmt.Printf("    POST /delegate/x402   Delegation (embedded)\n")
+		fmt.Printf("    POST /api/v1/tx       Fee delegator API\n")
+		fmt.Printf("    GET  /api/utxo/stats  UTXO pool stats\n")
+		fmt.Printf("    GET  /api/utxo/health UTXO pool health\n")
+		fmt.Printf("    GET  /api/health      API health\n")
+	}
 	fmt.Printf("    GET  /api/v1/config   Dashboard config\n")
 	fmt.Printf("    GET  /api/v1/stats/*  Dashboard analytics\n")
 	fmt.Printf("    GET  /api/v1/treasury/* Treasury mgmt\n")

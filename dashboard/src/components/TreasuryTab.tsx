@@ -153,6 +153,69 @@ export default function TreasuryTab() {
         </div>
       </div>
 
+      {/* Settlement capacity summary */}
+      {info.noncePool && info.paymentPool && (
+        <div className="card">
+          <div className="card-header">
+            <span className="card-title">Settlement Capacity</span>
+          </div>
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: '1fr 1fr 1fr',
+            gap: 16,
+          }}>
+            <div style={{
+              padding: '12px 14px',
+              background: 'var(--bg-primary)',
+              borderRadius: 'var(--radius)',
+              border: '1px solid var(--border)',
+            }}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.3px', marginBottom: 4 }}>
+                Requests Possible
+              </div>
+              <div style={{ fontSize: 22, fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--accent-blue)' }}>
+                {info.noncePool.available.toLocaleString()}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                nonce UTXOs available
+              </div>
+            </div>
+            <div style={{
+              padding: '12px 14px',
+              background: 'var(--bg-primary)',
+              borderRadius: 'var(--radius)',
+              border: '1px solid var(--border)',
+            }}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.3px', marginBottom: 4 }}>
+                Average Price
+              </div>
+              <div style={{ fontSize: 22, fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>
+                {formatSats(info.paymentPool.utxo_value || 0)}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                per payment UTXO
+              </div>
+            </div>
+            <div style={{
+              padding: '12px 14px',
+              background: 'var(--bg-primary)',
+              borderRadius: 'var(--radius)',
+              border: '1px solid var(--border)',
+            }}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.3px', marginBottom: 4 }}>
+                Revenue Capacity
+              </div>
+              <div style={{ fontSize: 22, fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--accent-green-text)' }}>
+                {formatSats(info.paymentPool.available * (info.paymentPool.utxo_value || 0))}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                {info.paymentPool.available} payments at {formatSats(info.paymentPool.utxo_value || 0)} each
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Pool status */}
       <div className="grid grid-3">
         {info.noncePool && <PoolStats label="Nonce" stats={info.noncePool} />}
@@ -180,6 +243,7 @@ export default function TreasuryTab() {
                 <th>TxID</th>
                 <th>Vout</th>
                 <th>Amount</th>
+                <th>Status</th>
                 <th>Action</th>
               </tr>
             </thead>
@@ -209,6 +273,32 @@ export default function TreasuryTab() {
                     </td>
                     <td>{utxo.vout}</td>
                     <td>{formatSats(utxo.satoshis)}</td>
+                    <td>
+                      <span
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 600,
+                          textTransform: 'uppercase',
+                          letterSpacing: '0.05em',
+                          padding: '2px 6px',
+                          borderRadius: 4,
+                          background: utxo.status === 'mempool'
+                            ? 'rgba(245, 158, 11, 0.15)'
+                            : 'rgba(16, 185, 129, 0.15)',
+                          color: utxo.status === 'mempool'
+                            ? '#f59e0b'
+                            : '#10b981',
+                          border: `1px solid ${utxo.status === 'mempool'
+                            ? 'rgba(245, 158, 11, 0.3)'
+                            : 'rgba(16, 185, 129, 0.3)'}`,
+                        }}
+                        title={utxo.status === 'mempool'
+                          ? 'Locally tracked — not yet confirmed on-chain'
+                          : 'Confirmed on-chain'}
+                      >
+                        {utxo.status === 'mempool' ? 'Mempool' : 'Confirmed'}
+                      </span>
+                    </td>
                     <td>
                       <button
                         className="btn btn-sm"
@@ -246,9 +336,9 @@ export default function TreasuryTab() {
           <div className="form-group">
             <label className="form-label">Target Pool</label>
             <select className="form-input" value={pool} onChange={(e) => setPool(e.target.value)}>
-              <option value="nonce">Nonce Pool (1 sat)</option>
-              <option value="fee">Fee Pool (1 sat)</option>
-              <option value="payment">Payment Pool (100 sat)</option>
+              <option value="nonce">Nonce Pool ({formatSats(info.noncePool?.utxo_value || 1)}/UTXO)</option>
+              <option value="fee">Fee Pool ({formatSats(info.feePool?.utxo_value || 1)}/UTXO)</option>
+              <option value="payment">Payment Pool ({formatSats(info.paymentPool?.utxo_value || 100)}/UTXO)</option>
             </select>
           </div>
           <div className="form-group">
@@ -333,6 +423,72 @@ export default function TreasuryTab() {
             </div>
           </>
         )}
+
+        {/* Fan-out preview */}
+        {fundingSatoshis && parseInt(count) > 0 && (() => {
+          const poolStats = pool === 'nonce' ? info.noncePool : pool === 'fee' ? info.feePool : info.paymentPool
+          const outputValue = poolStats?.utxo_value || (pool === 'payment' ? 100 : 1)
+          const outputCount = parseInt(count)
+          const inputSats = parseInt(fundingSatoshis)
+          const totalOutput = outputCount * outputValue
+          // Estimate tx size: 10 overhead + 148/input + 34/output (including change output)
+          const estimatedTxSize = 10 + 148 + (outputCount + 1) * 34
+          // Fee at 1 sat/KB (0.001 sat/byte), minimum 1 sat
+          const estimatedFee = Math.max(1, Math.ceil(estimatedTxSize * 0.001))
+          const estimatedChange = inputSats - totalOutput - estimatedFee
+          const insufficient = estimatedChange < 0
+
+          return (
+            <div style={{
+              padding: '12px 14px',
+              marginBottom: 12,
+              borderRadius: 'var(--radius)',
+              border: `1px solid ${insufficient ? 'var(--accent-red)' : 'var(--border)'}`,
+              background: insufficient ? 'rgba(218, 54, 51, 0.06)' : 'var(--bg-primary)',
+            }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.3px', marginBottom: 8 }}>
+                Fan-Out Preview
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr 1fr', gap: 12 }}>
+                <div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Input Value</div>
+                  <div style={{ fontSize: 14, fontWeight: 600, fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>
+                    {formatSats(inputSats)}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Output Count</div>
+                  <div style={{ fontSize: 14, fontWeight: 600, fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>
+                    {outputCount.toLocaleString()}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Per UTXO</div>
+                  <div style={{ fontSize: 14, fontWeight: 600, fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>
+                    {formatSats(outputValue)}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Est. Fee</div>
+                  <div style={{ fontSize: 14, fontWeight: 600, fontFamily: 'var(--font-mono)', color: insufficient ? 'var(--accent-red-text)' : 'var(--text-primary)' }}>
+                    {insufficient ? '—' : formatSats(estimatedFee)}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Est. Change</div>
+                  <div style={{ fontSize: 14, fontWeight: 600, fontFamily: 'var(--font-mono)', color: insufficient ? 'var(--accent-red-text)' : 'var(--accent-green-text)' }}>
+                    {insufficient ? 'Insufficient' : formatSats(estimatedChange)}
+                  </div>
+                </div>
+              </div>
+              {insufficient && (
+                <div style={{ marginTop: 8, fontSize: 12, color: 'var(--accent-red-text)' }}>
+                  Need at least {formatSats(totalOutput + estimatedFee)} to create {outputCount} UTXOs at {formatSats(outputValue)} each.
+                </div>
+              )}
+            </div>
+          )
+        })()}
 
         <button className="btn btn-primary" onClick={handleFanout} disabled={running || !fundingTxid || !fundingScript || !fundingSatoshis}>
           {running ? <span className="spinner" /> : null}

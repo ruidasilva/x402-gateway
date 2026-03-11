@@ -35,6 +35,15 @@ var x402SigHash = sighash.Flag(sighash.AllForkID | sighash.AnyOneCanPay)
 // last byte of every DER signature in the partial tx's client inputs.
 const requiredSighashByte = byte(0xC1)
 
+// allForkIDSighashByte is SIGHASH_ALL|FORKID (0x41) without ANYONECANPAY.
+// Accepted on client/sponsor inputs alongside 0xC1.
+const allForkIDSighashByte = byte(0x41)
+
+// templateSighashByte is the raw byte value (0xC3) used by gateway-signed
+// nonce inputs in Profile B (Gateway Template mode). This is
+// SIGHASH_SINGLE|ANYONECANPAY|FORKID — allows appending inputs AND outputs.
+const templateSighashByte = byte(0xC3)
+
 // Delegator validates client-constructed partial transactions and appends
 // fee inputs. Per canonical spec, the delegator:
 //   - Does NOT construct the transaction (client does)
@@ -159,12 +168,26 @@ func (d *Delegator) Accept(req DelegationRequest) (*DelegationResult, error) {
 		}
 	}
 
-	// 3e. Enforce sighash = 0xC1 on ALL client inputs
-	if err := enforceSighash(tx); err != nil {
+	// 3e. Enforce sighash on client inputs
+	//     Profile A: all inputs must be 0xC1
+	//     Profile B: input 0 (gateway template nonce) may be 0xC3, rest must be 0xC1
+	if err := enforceSighash(tx, req.TemplateMode); err != nil {
 		return nil, &DelegationError{
 			Code:    ErrInvalidSighash.Code,
 			Message: err.Error(),
 			Status:  ErrInvalidSighash.Status,
+		}
+	}
+
+	// 3f. In template mode, nonce input MUST be at index 0 (SIGHASH_SINGLE
+	//     binds the signature to output[input_index] — moving it breaks the sig)
+	if req.TemplateMode {
+		if err := verifyNonceAtIndex0(tx, req.NonceOutpoint); err != nil {
+			return nil, &DelegationError{
+				Code:    ErrInvalidPartialTx.Code,
+				Message: err.Error(),
+				Status:  ErrInvalidPartialTx.Status,
+			}
 		}
 	}
 
@@ -204,72 +227,116 @@ func (d *Delegator) Accept(req DelegationRequest) (*DelegationResult, error) {
 		}
 	}()
 
-	// ── Step 5: Lease fee UTXO ──
-	// Record client input count before adding fee input
+	// ── Step 5: Calculate funding deficit and iteratively lease fee UTXOs ──
 	clientInputCount := tx.InputCount()
 
-	feeNeeded := CalculateFee(tx, 1, d.feeRate)
-
-	feeUTXO, err := d.feePool.Lease()
-	if err != nil {
-		return nil, &DelegationError{
-			Code:    ErrNoUTXOAvailable.Code,
-			Message: fmt.Sprintf("lease fee UTXO: %s", err),
-			Status:  ErrNoUTXOAvailable.Status,
-		}
-	}
-
-	// ── Step 6: Add fee input with 0xC1 sighash ──
-	feeUnlocker, err := p2pkh.Unlock(d.key, &x402SigHash)
-	if err != nil {
-		return nil, fmt.Errorf("create fee unlocker: %w", err)
-	}
-
-	err = tx.AddInputFrom(feeUTXO.TxID, feeUTXO.Vout, feeUTXO.Script, feeUTXO.Satoshis, feeUnlocker)
-	if err != nil {
-		return nil, fmt.Errorf("add fee input: %w", err)
-	}
-
-	// ── Step 7: Add change output if needed ──
-	// Sum all client input satoshis from the partial tx
-	var clientInputSats uint64
-	for i := 0; i < clientInputCount; i++ {
-		if tx.Inputs[i].SourceTransaction != nil {
-			for _, out := range tx.Inputs[i].SourceTransaction.Outputs {
-				clientInputSats += out.Satoshis
-			}
-		}
-		// If SourceTransaction is not set, the satoshis are embedded via AddInputFrom
-		// and tracked internally by the SDK
-	}
-
-	totalInputs := feeUTXO.Satoshis // fee input satoshis are known
-	// For change calculation, we use fee UTXO sats since client inputs
-	// fund the payee output and any excess goes to change
+	// Sum all existing output values (payment output + any client outputs).
 	var totalOutputSats uint64
 	for _, out := range tx.Outputs {
 		totalOutputSats += out.Satoshis
 	}
 
-	// Change = fee UTXO sats - needed fee (client inputs cover payee output)
-	if feeUTXO.Satoshis > feeNeeded+546 { // dust threshold
-		change := feeUTXO.Satoshis - feeNeeded
-		if err := tx.PayToAddress(d.address.AddressString, change); err != nil {
-			return nil, fmt.Errorf("add change output: %w", err)
+	// Account for existing input values (nonce + any client inputs).
+	// Bitcoin raw tx bytes don't carry input amounts, but the nonce value
+	// is known from the pool (passed via NonceOutpointRef.Satoshis).
+	// The nonce's 1 sat covers the miner fee; fee inputs cover the payment.
+	var existingInputSats uint64
+	if req.NonceOutpoint != nil && req.NonceOutpoint.Satoshis > 0 {
+		existingInputSats = req.NonceOutpoint.Satoshis
+	}
+
+	var feeInputSats uint64
+	var feeUTXOs []*pool.UTXO
+
+	for {
+		// Estimate miner fee with current number of planned fee inputs.
+		minerFee := CalculateFee(tx, len(feeUTXOs), d.feeRate)
+
+		// Deficit = outputs + miner fee - existing inputs (nonce contributes its sats)
+		var needed uint64
+		total := totalOutputSats + minerFee
+		if total > existingInputSats {
+			needed = total - existingInputSats
+		}
+
+		if feeInputSats >= needed {
+			break // sufficient funding accumulated
+		}
+
+		utxo, err := d.feePool.Lease()
+		if err != nil {
+			// Fee pool exhausted before covering the deficit.
+			// Previously leased UTXOs will be reclaimed by the pool's reclaim loop.
+			return nil, &DelegationError{
+				Code: ErrNoUTXOAvailable.Code,
+				Message: fmt.Sprintf(
+					"insufficient fee pool balance: accumulated %d sats from %d UTXOs, need %d sats (payment=%d, miner_fee_est=%d, existing_inputs=%d)",
+					feeInputSats, len(feeUTXOs), needed, totalOutputSats, minerFee, existingInputSats,
+				),
+				Status: ErrNoUTXOAvailable.Status,
+			}
+		}
+		feeUTXOs = append(feeUTXOs, utxo)
+		feeInputSats += utxo.Satoshis
+	}
+
+	d.logger.Info("fee UTXOs leased",
+		"count", len(feeUTXOs),
+		"total_fee_sats", feeInputSats,
+		"payment_output_sats", totalOutputSats,
+	)
+
+	// ── Step 6: Add all fee inputs with 0xC1 sighash ──
+	for _, utxo := range feeUTXOs {
+		feeUnlocker, err := p2pkh.Unlock(d.key, &x402SigHash)
+		if err != nil {
+			return nil, fmt.Errorf("create fee unlocker: %w", err)
+		}
+		if err := tx.AddInputFrom(utxo.TxID, utxo.Vout, utxo.Script, utxo.Satoshis, feeUnlocker); err != nil {
+			return nil, fmt.Errorf("add fee input %s:%d: %w", utxo.TxID, utxo.Vout, err)
 		}
 	}
-	_ = totalInputs // used for clarity above
 
-	// ── Step 8: Explicitly sign ONLY the fee input by index ──
-	feeInputIdx := uint32(clientInputCount) // fee input is appended after all client inputs
-	if tx.Inputs[feeInputIdx].UnlockingScriptTemplate == nil {
-		return nil, fmt.Errorf("fee input at index %d has no unlocking script template", feeInputIdx)
+	// ── Step 7: Add change output if fee inputs exceed needed amount ──
+	finalMinerFee := CalculateFee(tx, 0, d.feeRate) // all inputs already added
+	var change uint64
+	if feeInputSats > totalOutputSats+finalMinerFee {
+		change = feeInputSats - totalOutputSats - finalMinerFee
+		if change > 546 { // above dust threshold
+			if err := tx.PayToAddress(d.address.AddressString, change); err != nil {
+				return nil, fmt.Errorf("add change output: %w", err)
+			}
+		} else {
+			change = 0 // dust goes to miner as extra fee
+		}
 	}
-	unlockScript, err := tx.Inputs[feeInputIdx].UnlockingScriptTemplate.Sign(tx, feeInputIdx)
-	if err != nil {
-		return nil, fmt.Errorf("sign fee input: %w", err)
+
+	// ── Step 8: Sign ALL fee inputs ──
+	for i := 0; i < len(feeUTXOs); i++ {
+		feeInputIdx := uint32(clientInputCount + i)
+		if tx.Inputs[feeInputIdx].UnlockingScriptTemplate == nil {
+			return nil, fmt.Errorf("fee input at index %d has no unlocking script template", feeInputIdx)
+		}
+		unlockScript, err := tx.Inputs[feeInputIdx].UnlockingScriptTemplate.Sign(tx, feeInputIdx)
+		if err != nil {
+			return nil, fmt.Errorf("sign fee input at index %d: %w", feeInputIdx, err)
+		}
+		tx.Inputs[feeInputIdx].UnlockingScript = unlockScript
 	}
-	tx.Inputs[feeInputIdx].UnlockingScript = unlockScript
+
+	// ── Pre-return validation: consensus rule check ──
+	// Verify total inputs (fee + nonce) cover all outputs.
+	var finalOutputSats uint64
+	for _, out := range tx.Outputs {
+		finalOutputSats += out.Satoshis
+	}
+	totalInputSats := feeInputSats + existingInputSats
+	if totalInputSats < finalOutputSats {
+		return nil, fmt.Errorf(
+			"consensus violation: total inputs (%d sats = %d fee + %d nonce) < outputs (%d sats) — transaction would be rejected",
+			totalInputSats, feeInputSats, existingInputSats, finalOutputSats,
+		)
+	}
 
 	txid := tx.TxID().String()
 
@@ -279,15 +346,20 @@ func (d *Delegator) Accept(req DelegationRequest) (*DelegationResult, error) {
 	}
 	nonceCommitted = true
 
-	// ── Step 10: Mark fee UTXO spent ──
-	d.feePool.MarkSpent(feeUTXO.TxID, feeUTXO.Vout)
+	// ── Step 10: Mark ALL fee UTXOs spent ──
+	for _, utxo := range feeUTXOs {
+		d.feePool.MarkSpent(utxo.TxID, utxo.Vout)
+	}
 
 	d.logger.Info("delegation accepted",
 		"txid", txid,
 		"challenge_hash", req.ChallengeHash,
 		"nonce", fmt.Sprintf("%s:%d", req.NonceOutpoint.TxID, req.NonceOutpoint.Vout),
-		"fee_sats", feeUTXO.Satoshis,
-		"fee_needed", feeNeeded,
+		"fee_inputs", len(feeUTXOs),
+		"fee_input_sats", feeInputSats,
+		"output_sats", finalOutputSats,
+		"miner_fee_est", finalMinerFee,
+		"change_sats", change,
 		"client_inputs", clientInputCount,
 	)
 
@@ -328,16 +400,28 @@ func verifyPayeeOutput(tx *transaction.Transaction, expectedScriptHex string, mi
 	return fmt.Errorf("no output paying >= %d sats to expected payee", minAmount)
 }
 
-// enforceSighash validates that all inputs in the partial transaction use
-// SIGHASH_ALL|ANYONECANPAY|FORKID (0xC1). This guarantees that appending
-// fee inputs will not invalidate client signatures.
+// enforceSighash validates sighash flags on all client inputs.
+//
+// Profile A (templateMode=false):
+//
+//	All inputs must use 0xC1 (SIGHASH_ALL|ANYONECANPAY|FORKID) or 0x41 (SIGHASH_ALL|FORKID).
+//
+// Profile B (templateMode=true):
+//
+//	Input 0 (gateway template nonce) must use 0xC3 (SIGHASH_SINGLE|ANYONECANPAY|FORKID).
+//	All other inputs must use 0xC1 or 0x41.
+//
+// Template mode requires 0xC3 exclusively on input 0 because SIGHASH_SINGLE|ANYONECANPAY
+// locks output[0] while allowing sponsors to append inputs and change outputs.
+// Accepting 0xC1 (ALL|ANYONECANPAY) on the nonce input would commit to all outputs,
+// breaking the intended template extensibility model.
 //
 // Parses the P2PKH scriptSig structure:
 //
 //	<sig_push_opcode> <DER_signature || sighash_byte> <pubkey_push_opcode> <pubkey>
 //
 // The sighash byte is the last byte of the signature data chunk.
-func enforceSighash(tx *transaction.Transaction) error {
+func enforceSighash(tx *transaction.Transaction, templateMode bool) error {
 	for i, input := range tx.Inputs {
 		if input.UnlockingScript == nil || len(*input.UnlockingScript) == 0 {
 			return fmt.Errorf("input %d has no unlocking script", i)
@@ -348,9 +432,36 @@ func enforceSighash(tx *transaction.Transaction) error {
 			return fmt.Errorf("input %d: %w", i, err)
 		}
 
-		if sighashByte != requiredSighashByte {
-			return fmt.Errorf("input %d uses sighash 0x%02X, required 0xC1 (SIGHASH_ALL|ANYONECANPAY|FORKID)", i, sighashByte)
+		if templateMode && i == 0 {
+			// Profile B: input 0 must be gateway-signed with 0xC3
+			if sighashByte != templateSighashByte {
+				return fmt.Errorf("input 0 uses sighash 0x%02X, required 0xC3 (SIGHASH_SINGLE|ANYONECANPAY|FORKID)", sighashByte)
+			}
+			continue
 		}
+
+		if sighashByte != requiredSighashByte && sighashByte != allForkIDSighashByte {
+			return fmt.Errorf("input %d uses sighash 0x%02X, required 0xC1 or 0x41 (SIGHASH_ALL with FORKID)", i, sighashByte)
+		}
+	}
+	return nil
+}
+
+// verifyNonceAtIndex0 checks that the nonce outpoint is at input index 0.
+// Required for Profile B because SIGHASH_SINGLE binds the gateway signature
+// to output[input_index]. If the nonce input is not at index 0, the signature
+// commits to the wrong output.
+func verifyNonceAtIndex0(tx *transaction.Transaction, nonce *NonceOutpointRef) error {
+	if nonce == nil {
+		return fmt.Errorf("nonce outpoint is nil")
+	}
+	if tx.InputCount() < 1 {
+		return fmt.Errorf("transaction has no inputs")
+	}
+	input0 := tx.Inputs[0]
+	if input0.SourceTXID == nil || !constantTimeEqual(input0.SourceTXID.String(), nonce.TxID) || input0.SourceTxOutIndex != nonce.Vout {
+		return fmt.Errorf("template mode requires nonce input at index 0, but input 0 is %s:%d (expected %s:%d)",
+			input0.SourceTXID, input0.SourceTxOutIndex, nonce.TxID, nonce.Vout)
 	}
 	return nil
 }

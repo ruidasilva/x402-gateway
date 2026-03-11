@@ -38,8 +38,9 @@ type FanoutRequest struct {
 
 // FanoutResult contains the broadcast txid and the newly created UTXOs.
 type FanoutResult struct {
-	TxID  string      // txid of the fan-out transaction
-	UTXOs []pool.UTXO // newly created 1-sat UTXOs
+	TxID       string       // txid of the fan-out transaction
+	UTXOs      []pool.UTXO  // newly created pool UTXOs (vout 0..N-1)
+	ChangeUTXO *FundingUTXO // change output back to treasury (nil if none/dust)
 }
 
 // BuildFanout constructs and broadcasts a fan-out transaction that splits one
@@ -171,6 +172,28 @@ func BuildFanout(
 		}
 	}
 
+	// Build change UTXO for mempool tracking (when change > dust)
+	var changeUTXO *FundingUTXO
+	if change > 546 {
+		changeAddr := addrStr
+		if req.ChangeAddress != "" {
+			changeAddr = req.ChangeAddress
+		}
+		// Derive locking script hex for the change address
+		changeAddrObj, err := script.NewAddressFromString(changeAddr)
+		if err == nil {
+			changeLockScript, err := p2pkh.Lock(changeAddrObj)
+			if err == nil {
+				changeUTXO = &FundingUTXO{
+					TxID:     txid,
+					Vout:     uint32(req.OutputCount), // change is last output
+					Script:   fmt.Sprintf("%x", *changeLockScript),
+					Satoshis: change,
+				}
+			}
+		}
+	}
+
 	logger.Info("fan-out complete",
 		"txid", txid,
 		"outputs", req.OutputCount,
@@ -181,8 +204,9 @@ func BuildFanout(
 	)
 
 	return &FanoutResult{
-		TxID:  txid,
-		UTXOs: utxos,
+		TxID:       txid,
+		UTXOs:      utxos,
+		ChangeUTXO: changeUTXO,
 	}, nil
 }
 

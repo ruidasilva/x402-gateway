@@ -60,6 +60,18 @@ type Config struct {
 	// Treasury UTXO watcher poll interval in seconds (0 = disabled)
 	TreasuryPollInterval int
 
+	// Fee pool UTXO denomination in satoshis (1–1000, default 1)
+	FeeUTXOSats uint64 // FEE_UTXO_SATS (denomination per fee pool UTXO)
+
+	// Profile B: Gateway Template mode
+	TemplateMode      bool   // TEMPLATE_MODE (true = generate pre-signed templates per nonce)
+	TemplatePriceSats uint64 // TEMPLATE_PRICE_SATS (price embedded in each template, default 100)
+
+	// Delegator configuration
+	DelegatorPort     int  // DELEGATOR_PORT (default 8403, used by cmd/delegator)
+	DelegatorEmbedded bool // DELEGATOR_EMBEDDED (true = gateway hosts delegator in-process)
+	DelegatorURL      string // DELEGATOR_URL (for dashboard config, e.g. http://localhost:8403)
+
 	// Backward-compatible aliases (deprecated, use PoolSize/LeaseTTL)
 	NoncePoolSize int
 	NonceLeaseTTL time.Duration
@@ -88,6 +100,19 @@ func Load() (*Config, error) {
 		PoolOptimalSize:        envIntOrDefault("POOL_OPTIMAL_SIZE", 5000),
 		TreasuryPollInterval:   envIntOrDefault("TREASURY_POLL_INTERVAL", 60),
 
+		// Fee pool denomination — each fee UTXO should match the payment price
+		// so a single fee input covers the payment output.
+		FeeUTXOSats: uint64(envIntOrDefault("FEE_UTXO_SATS", 100)),
+
+		// Profile B
+		TemplateMode:      envBoolOrDefault("TEMPLATE_MODE", false),
+		TemplatePriceSats: uint64(envIntOrDefault("TEMPLATE_PRICE_SATS", 100)),
+
+		// Delegator
+		DelegatorPort:     envIntOrDefault("DELEGATOR_PORT", 8403),
+		DelegatorEmbedded: envBoolOrDefault("DELEGATOR_EMBEDDED", false),
+		DelegatorURL:      os.Getenv("DELEGATOR_URL"),
+
 		// Backward-compatible aliases
 		NoncePoolSize: poolSize,
 		NonceLeaseTTL: leaseTTL,
@@ -105,6 +130,9 @@ func Load() (*Config, error) {
 	if cfg.Broadcaster == "" {
 		return nil, fmt.Errorf("BROADCASTER is required (set in .env, e.g. BROADCASTER=mock or BROADCASTER=woc)")
 	}
+	if cfg.FeeUTXOSats < 1 || cfg.FeeUTXOSats > 1000 {
+		return nil, fmt.Errorf("FEE_UTXO_SATS must be between 1 and 1000, got %d", cfg.FeeUTXOSats)
+	}
 
 	return cfg, nil
 }
@@ -112,6 +140,21 @@ func Load() (*Config, error) {
 // IsMainnet returns true if the network is mainnet.
 func (c *Config) IsMainnet() bool {
 	return c.BSVNetwork == "mainnet"
+}
+
+// RuntimeMode returns "mock" or "live" based on the broadcaster config.
+// Used to namespace Redis keys so mock and live data never intersect.
+func (c *Config) RuntimeMode() string {
+	if c.Broadcaster == "mock" {
+		return "mock"
+	}
+	return "live"
+}
+
+// PoolPrefix returns the namespaced Redis key prefix for a pool.
+// Format: "<mode>:<poolName>:" — e.g. PoolPrefix("live", "nonce") → "live:nonce:"
+func PoolPrefix(mode, poolName string) string {
+	return mode + ":" + poolName + ":"
 }
 
 func envOrDefault(key, def string) string {

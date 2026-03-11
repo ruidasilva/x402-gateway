@@ -14,6 +14,7 @@ import (
 	"log/slog"
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
+	"github.com/bsv-blockchain/go-sdk/script"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 	sighash "github.com/bsv-blockchain/go-sdk/transaction/sighash"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
@@ -36,10 +37,11 @@ type SweepRequest struct {
 
 // SweepResult contains the broadcast txid and value swept.
 type SweepResult struct {
-	TxID       string // txid of the sweep transaction
-	InputSats  uint64 // total input satoshis
-	OutputSats uint64 // satoshis sent to destination (after fee)
-	Fee        uint64 // miner fee paid
+	TxID       string       // txid of the sweep transaction
+	InputSats  uint64       // total input satoshis
+	OutputSats uint64       // satoshis sent to destination (after fee)
+	Fee        uint64       // miner fee paid
+	OutputUTXO *FundingUTXO // consolidated output at destination (for mempool tracking)
 }
 
 // BuildSweep constructs and broadcasts a sweep transaction that consolidates
@@ -109,6 +111,21 @@ func BuildSweep(
 
 	txid := success.Txid
 
+	// Build output UTXO for mempool tracking
+	var outputUTXO *FundingUTXO
+	destAddr, err := script.NewAddressFromString(req.Destination)
+	if err == nil {
+		destLockScript, err := p2pkh.Lock(destAddr)
+		if err == nil {
+			outputUTXO = &FundingUTXO{
+				TxID:     txid,
+				Vout:     0, // sweep has a single output
+				Script:   fmt.Sprintf("%x", *destLockScript),
+				Satoshis: outputSats,
+			}
+		}
+	}
+
 	logger.Info("sweep complete",
 		"txid", txid,
 		"inputs", len(req.Inputs),
@@ -123,5 +140,6 @@ func BuildSweep(
 		InputSats:  totalInput,
 		OutputSats: outputSats,
 		Fee:        fee,
+		OutputUTXO: outputUTXO,
 	}, nil
 }

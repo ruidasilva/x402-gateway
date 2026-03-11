@@ -38,6 +38,7 @@ type BuildOptions struct {
 	TTL                   time.Duration // challenge validity period
 	BindHeaders           []string      // which request headers to include in binding
 	NonceUTXO             *NonceRef     // nonce UTXO for replay protection (required)
+	Template              *TemplateRef  // Profile B: pre-signed template (nil for Profile A)
 }
 
 // Build creates a 402 challenge from an HTTP request.
@@ -70,6 +71,9 @@ func Build(req *http.Request, opts BuildOptions) (*Challenge, error) {
 
 		// Nonce UTXO for replay protection
 		NonceUTXO: opts.NonceUTXO,
+
+		// Profile B template (nil for Profile A — omitted from JSON)
+		Template: opts.Template,
 
 		// Settlement parameters
 		RequireMempoolAccept:  true,

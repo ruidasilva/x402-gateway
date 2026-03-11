@@ -184,6 +184,16 @@ func (p *RedisPool) Lease() (*UTXO, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Fallback safeguard: reject synthetic UTXOs that should not be in this pool.
+	// With mode-namespaced pools, this should never trigger — defense-in-depth only.
+	if utxo.Synthetic {
+		p.logger.Warn("fallback: rejecting synthetic UTXO in pool",
+			"txid", txid, "vout", vout, "prefix", p.prefix)
+		// Already removed from available ZSET above; fall through to linear scan
+		return p.leaseLinearScan(ctx, now, expiresAt)
+	}
+
 	utxo.Status = StatusLeased
 	utxo.LeasedAt = now
 	utxo.ExpiresAt = expiresAt
@@ -191,12 +201,20 @@ func (p *RedisPool) Lease() (*UTXO, error) {
 	return utxo, nil
 }
 
+// maxSyntheticSkips bounds how many synthetic UTXOs leaseLinearScan will
+// evict before giving up. Prevents runaway iteration if a pool is heavily
+// contaminated. The integrity check (pool.CheckIntegrity) should be used
+// to clean up such pools in bulk.
+const maxSyntheticSkips = 10
+
 // leaseLinearScan is a fallback when round-robin hits a non-available UTXO.
 func (p *RedisPool) leaseLinearScan(ctx context.Context, now, expiresAt time.Time) (*UTXO, error) {
 	members, err := p.rdb.ZRange(ctx, p.k(keyAvailable), 0, -1).Result()
 	if err != nil {
 		return nil, fmt.Errorf("zrange scan: %w", err)
 	}
+
+	syntheticSkips := 0
 
 	for _, outpoint := range members {
 		parts := strings.SplitN(outpoint, ":", 2)
@@ -223,6 +241,18 @@ func (p *RedisPool) leaseLinearScan(ctx context.Context, now, expiresAt time.Tim
 		if err != nil {
 			return nil, err
 		}
+
+		// Fallback safeguard: skip synthetic UTXOs with bounded iteration
+		if utxo.Synthetic {
+			p.logger.Warn("fallback: skipping synthetic UTXO in linear scan",
+				"txid", txid, "vout", vout, "prefix", p.prefix)
+			syntheticSkips++
+			if syntheticSkips >= maxSyntheticSkips {
+				return nil, fmt.Errorf("too many synthetic UTXOs in pool %s — run integrity check", p.prefix)
+			}
+			continue
+		}
+
 		utxo.Status = StatusLeased
 		utxo.LeasedAt = now
 		utxo.ExpiresAt = expiresAt
@@ -353,6 +383,27 @@ func (p *RedisPool) loadUTXO(ctx context.Context, txid string, vout uint32) (*UT
 		utxo.ExpiresAt = time.Unix(ts, 0)
 	}
 
+	// Mode-segregation metadata
+	if data["synthetic"] == "true" {
+		utxo.Synthetic = true
+	}
+	utxo.OriginMode = data["origin_mode"]
+
+	// Profile B template metadata
+	if tmpl, ok := data["rawtx_template"]; ok {
+		utxo.RawTxTemplate = tmpl
+	}
+	if priceStr, ok := data["template_price_sats"]; ok && priceStr != "" {
+		utxo.TemplatePriceSats, _ = strconv.ParseUint(priceStr, 10, 64)
+	}
+	if cls, ok := data["endpoint_class"]; ok {
+		utxo.EndpointClass = cls
+	}
+	if verStr, ok := data["template_version"]; ok && verStr != "" {
+		v, _ := strconv.ParseUint(verStr, 10, 32)
+		utxo.TemplateVersion = uint32(v)
+	}
+
 	return utxo, nil
 }
 
@@ -408,6 +459,24 @@ func (p *RedisPool) AddExisting(utxos []UTXO) {
 			"satoshis", u.Satoshis,
 			"status", string(StatusAvailable),
 		)
+
+		// Mode-segregation metadata (synthetic provenance tracking)
+		if u.Synthetic {
+			pipe.HSet(ctx, detKey,
+				"synthetic", "true",
+				"origin_mode", u.OriginMode,
+			)
+		}
+
+		// Profile B template metadata (stored alongside nonce identity)
+		if u.RawTxTemplate != "" {
+			pipe.HSet(ctx, detKey,
+				"rawtx_template", u.RawTxTemplate,
+				"template_price_sats", u.TemplatePriceSats,
+				"endpoint_class", u.EndpointClass,
+				"template_version", u.TemplateVersion,
+			)
+		}
 	}
 
 	// Update stats
@@ -421,6 +490,60 @@ func (p *RedisPool) AddExisting(utxos []UTXO) {
 	}
 }
 
+// ListAvailable returns all available UTXOs with their full metadata.
+// Used at startup for operations like Profile B template generation
+// that need to iterate over existing pool contents.
+func (p *RedisPool) ListAvailable() ([]UTXO, error) {
+	ctx := context.Background()
+	members, err := p.rdb.ZRangeByScore(ctx, p.k(keyAvailable), &redis.ZRangeBy{
+		Min: "-inf",
+		Max: "+inf",
+	}).Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list available UTXOs: %w", err)
+	}
+
+	utxos := make([]UTXO, 0, len(members))
+	for _, outpoint := range members {
+		parts := strings.SplitN(outpoint, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		vout64, _ := strconv.ParseUint(parts[1], 10, 32)
+		utxo, err := p.loadUTXO(ctx, parts[0], uint32(vout64))
+		if err != nil {
+			p.logger.Warn("skipping UTXO during list", "outpoint", outpoint, "error", err)
+			continue
+		}
+		utxos = append(utxos, *utxo)
+	}
+	return utxos, nil
+}
+
+// UpdateTemplates writes template metadata to existing UTXOs in Redis
+// without modifying their availability status or pool stats. Used at startup
+// when Profile B template generation is applied to pre-existing nonce UTXOs.
+func (p *RedisPool) UpdateTemplates(utxos []UTXO) error {
+	ctx := context.Background()
+	pipe := p.rdb.Pipeline()
+
+	for i := range utxos {
+		u := &utxos[i]
+		if u.RawTxTemplate == "" {
+			continue
+		}
+		detKey := p.detailKey(u.TxID, u.Vout)
+		pipe.HSet(ctx, detKey,
+			"rawtx_template", u.RawTxTemplate,
+			"template_price_sats", u.TemplatePriceSats,
+			"template_version", u.TemplateVersion,
+		)
+	}
+
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
 // Available returns the count of available UTXOs.
 func (p *RedisPool) Available() int {
 	ctx := context.Background()
@@ -432,7 +555,7 @@ func (p *RedisPool) Available() int {
 	return int(count)
 }
 
-// Stats returns pool statistics.
+// Stats returns pool statistics including UTXO denomination.
 func (p *RedisPool) Stats() PoolStats {
 	ctx := context.Background()
 
@@ -448,12 +571,41 @@ func (p *RedisPool) Stats() PoolStats {
 		leased = 0
 	}
 
-	return PoolStats{
-		Total:     int(totalAdded),
-		Available: int(available),
-		Leased:    int(leased),
-		Spent:     int(spent),
+	// Get UTXO denomination from the first available UTXO.
+	// All UTXOs in a pool have the same denomination (from fan-out).
+	var utxoValue uint64
+	members, err := p.rdb.ZRangeByScore(ctx, p.k(keyAvailable), &redis.ZRangeBy{
+		Min: "-inf", Max: "+inf", Count: 1,
+	}).Result()
+	if err == nil && len(members) > 0 {
+		outpoint := members[0]
+		detKey := p.k("details:" + outpoint)
+		if satsStr, err := p.rdb.HGet(ctx, detKey, "satoshis").Result(); err == nil {
+			val, _ := strconv.ParseUint(satsStr, 10, 64)
+			utxoValue = val
+		}
 	}
+
+	// Quarantined UTXOs (from integrity check)
+	quarantined, _ := p.rdb.SCard(ctx, p.k("quarantined")).Result()
+
+	return PoolStats{
+		Total:       int(totalAdded),
+		Available:   int(available),
+		Leased:      int(leased),
+		Spent:       int(spent),
+		Quarantined: int(quarantined),
+		UTXOValue:   utxoValue,
+	}
+}
+
+// IsAvailable returns true if the outpoint is currently in the available ZSET.
+// Uses ZSCORE for a lightweight O(1) membership check without loading full metadata.
+func (p *RedisPool) IsAvailable(txid string, vout uint32) bool {
+	ctx := context.Background()
+	outpoint := txid + ":" + uitoa(vout)
+	err := p.rdb.ZScore(ctx, p.k(keyAvailable), outpoint).Err()
+	return err == nil // nil = member exists, redis.Nil = not found
 }
 
 // StartReclaimLoop starts a background goroutine that reclaims expired leases.

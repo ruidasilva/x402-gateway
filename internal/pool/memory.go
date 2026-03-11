@@ -294,12 +294,13 @@ func (p *MemoryPool) StartReclaimLoop(interval time.Duration, stop <-chan struct
 	}()
 }
 
-// Stats returns pool statistics.
+// Stats returns pool statistics including UTXO denomination.
 func (p *MemoryPool) Stats() PoolStats {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	var stats PoolStats
+	var utxoValue uint64
 	for _, u := range p.utxos {
 		switch u.Status {
 		case StatusAvailable:
@@ -309,7 +310,13 @@ func (p *MemoryPool) Stats() PoolStats {
 		case StatusSpent:
 			stats.Spent++
 		}
+		// All UTXOs in a pool have the same denomination (from fan-out).
+		// Capture the first UTXO's value as the pool denomination.
+		if utxoValue == 0 && u.Satoshis > 0 {
+			utxoValue = u.Satoshis
+		}
 	}
 	stats.Total = len(p.utxos)
+	stats.UTXOValue = utxoValue
 	return stats
 }

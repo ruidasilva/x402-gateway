@@ -11,6 +11,7 @@ package dashboard
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/merkle-works/x402-gateway/internal/broadcast"
@@ -33,6 +34,14 @@ type ConfigResponse struct {
 	FeeAddress             string  `json:"feeAddress"`
 	PaymentAddress         string  `json:"paymentAddress"`
 	TreasuryAddress        string  `json:"treasuryAddress"`
+	TemplateMode           bool    `json:"templateMode"`
+	TemplatePriceSats      uint64  `json:"templatePriceSats,omitempty"`
+	FeeUTXOSats            uint64  `json:"feeUTXOSats"` // fee pool UTXO denomination (1–1000 sats)
+	Profile                string  `json:"profile"`       // "A (Open Nonce)" or "B (Gateway Template)"
+	DelegatorURL           string  `json:"delegatorUrl"`   // URL for the delegator service
+	DelegatorEmbedded      bool    `json:"delegatorEmbedded"` // true if delegator is hosted in-process
+	BroadcasterURL         string  `json:"broadcasterUrl,omitempty"` // URL for the broadcaster (if available)
+	Mode                   string  `json:"mode"`                     // "mock" or "live" (runtime mode for pool namespace)
 }
 
 // ConfigUpdateRequest is the subset of config that can be changed at runtime.
@@ -51,6 +60,23 @@ func (d *DashboardAPI) handleGetConfig() http.HandlerFunc {
 			keyMode = "xpriv"
 		}
 
+		profile := "A (Open Nonce)"
+		if d.cfg.TemplateMode {
+			profile = "B (Gateway Template)"
+		}
+
+		// Determine delegator URL for the dashboard
+		delegatorURL := d.cfg.DelegatorURL
+		if delegatorURL == "" {
+			if d.cfg.DelegatorEmbedded {
+				// Embedded: same host as gateway
+				delegatorURL = fmt.Sprintf("http://localhost:%d", d.cfg.Port)
+			} else {
+				// External: default delegator port
+				delegatorURL = fmt.Sprintf("http://localhost:%d", d.cfg.DelegatorPort)
+			}
+		}
+
 		resp := ConfigResponse{
 			Network:                d.cfg.BSVNetwork,
 			Port:                   d.cfg.Port,
@@ -67,6 +93,13 @@ func (d *DashboardAPI) handleGetConfig() http.HandlerFunc {
 			FeeAddress:             d.keys.FeeAddress,
 			PaymentAddress:         d.keys.PaymentAddress,
 			TreasuryAddress:        d.keys.TreasuryAddress,
+			TemplateMode:           d.cfg.TemplateMode,
+			TemplatePriceSats:      d.cfg.TemplatePriceSats,
+			FeeUTXOSats:            d.cfg.FeeUTXOSats,
+			Profile:                profile,
+			DelegatorURL:           delegatorURL,
+			DelegatorEmbedded:      d.cfg.DelegatorEmbedded,
+			Mode:                   d.cfg.RuntimeMode(),
 		}
 
 		writeJSON(w, http.StatusOK, resp)
@@ -166,3 +199,4 @@ func (d *DashboardAPI) handleUpdateConfig() http.HandlerFunc {
 		writeJSON(w, http.StatusOK, resp)
 	}
 }
+

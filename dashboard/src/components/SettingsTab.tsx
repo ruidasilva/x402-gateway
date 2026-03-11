@@ -5,7 +5,6 @@
 // You may obtain a copy of the License at
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
-//
 
 import { useState, useCallback } from 'react'
 import { getConfig, updateConfig } from '../api'
@@ -100,11 +99,39 @@ export default function SettingsTab() {
         <div className={`alert alert-${message.type}`}>{message.text}</div>
       )}
 
-      {/* Read-only config */}
+      {/* Operator guidance */}
+      <div className="alert alert-info" style={{ marginBottom: 16 }}>
+        This gateway is configured via environment variables. To change server configuration, edit the <strong>.env</strong> file and restart the container.
+      </div>
+
+      {/* Read-only server config */}
       <div className="card">
         <div className="card-header">
           <span className="card-title">Server Configuration</span>
-          <span className="card-subtitle">Requires restart to change</span>
+          <span className="card-subtitle">Read-only (set via .env)</span>
+        </div>
+        <div className="config-row">
+          <span className="config-key">Profile</span>
+          <span className="config-value" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {config.profile}
+            {config.templateMode && (
+              <span
+                style={{
+                  fontSize: 10,
+                  fontWeight: 600,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em',
+                  padding: '2px 6px',
+                  borderRadius: 4,
+                  background: 'rgba(99, 102, 241, 0.15)',
+                  color: '#818cf8',
+                  border: '1px solid rgba(99, 102, 241, 0.3)',
+                }}
+              >
+                {config.templatePriceSats} sats
+              </span>
+            )}
+          </span>
         </div>
         <div className="config-row">
           <span className="config-key">Network</span>
@@ -121,6 +148,10 @@ export default function SettingsTab() {
         <div className="config-row">
           <span className="config-key">Key Mode</span>
           <span className="config-value">{config.keyMode === 'xpriv' ? 'HD Wallet (xPriv)' : 'Single Key (WIF)'}</span>
+        </div>
+        <div className="config-row">
+          <span className="config-key">Pool Size</span>
+          <span className="config-value">{config.poolSize}</span>
         </div>
         <div className="config-row">
           <span className="config-key">Lease TTL</span>

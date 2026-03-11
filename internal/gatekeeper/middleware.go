@@ -79,6 +79,7 @@ func handleChallenge(w http.ResponseWriter, r *http.Request, cfg Config, logger 
 
 	// Lease a nonce UTXO for replay protection
 	var nonceRef *challenge.NonceRef
+	var templateRef *challenge.TemplateRef
 	if cfg.NoncePool != nil {
 		nonceUTXO, err := cfg.NoncePool.Lease()
 		if err != nil {
@@ -92,6 +93,14 @@ func handleChallenge(w http.ResponseWriter, r *http.Request, cfg Config, logger 
 			Vout:             nonceUTXO.Vout,
 			Satoshis:         nonceUTXO.Satoshis,
 			LockingScriptHex: nonceUTXO.Script,
+		}
+
+		// Profile B: include pre-signed template if available
+		if nonceUTXO.RawTxTemplate != "" {
+			templateRef = &challenge.TemplateRef{
+				RawTxHex:  nonceUTXO.RawTxTemplate,
+				PriceSats: nonceUTXO.TemplatePriceSats,
+			}
 		}
 	}
 
@@ -108,6 +117,7 @@ func handleChallenge(w http.ResponseWriter, r *http.Request, cfg Config, logger 
 		TTL:                   cfg.ChallengeTTL,
 		BindHeaders:           bindHeaders,
 		NonceUTXO:             nonceRef,
+		Template:              templateRef,
 	}
 
 	ch, err := challenge.Build(r, opts)
@@ -266,6 +276,10 @@ func handleProof(w http.ResponseWriter, r *http.Request, next http.Handler, proo
 					}
 				}
 
+				// Idempotent re-serve succeeded — delete challenge from cache (single-use)
+				if cfg.ChallengeCache != nil {
+					cfg.ChallengeCache.Delete(proof.ChallengeSHA256)
+				}
 				w.Header().Set(StatusHeader, "accepted")
 				next.ServeHTTP(w, r)
 				return
@@ -315,6 +329,20 @@ func handleProof(w http.ResponseWriter, r *http.Request, next http.Handler, proo
 			writeError(w, HTTPStatusForError(ErrNonceMissing), string(ErrNonceMissing), err.Error())
 			return
 		}
+
+		// Step 11b: For Profile B (template mode), verify nonce is at input[0].
+		// SIGHASH_SINGLE binds the signature to output[input_index], so the nonce
+		// input at index 0 commits to output[0] (the payee output). If the nonce
+		// were at a different index, the gateway's 0xC3 signature would lock the
+		// wrong output — which is consensus-invalid, but we catch it here early
+		// with a clear error for defence-in-depth.
+		if originalChallenge.Template != nil {
+			if err := verifyNonceAtInput0(tx, originalChallenge.NonceUTXO); err != nil {
+				logger.Warn("nonce position verification failed (template mode)", "error", err)
+				writeError(w, HTTPStatusForError(ErrNonceMissing), string(ErrNonceMissing), err.Error())
+				return
+			}
+		}
 	}
 
 	// Step 12: Verify request binding
@@ -335,10 +363,12 @@ func handleProof(w http.ResponseWriter, r *http.Request, next http.Handler, proo
 		return
 	}
 
-	// Step 14: Delete challenge from cache after successful verification (single-use)
-	if cfg.ChallengeCache != nil {
-		cfg.ChallengeCache.Delete(proof.ChallengeSHA256)
-	}
+	// Step 14: Challenge cache deletion is deferred until the final 200 response.
+	// If we deleted here unconditionally, a 202 (payment pending) response would
+	// prevent the client from polling — on retry the challenge would be gone,
+	// causing "challenge_not_found". Instead, the challenge stays in cache until
+	// mempool acceptance is confirmed (200), or until it expires naturally (TTL).
+	// The replay cache (Step 15) provides replay protection in the interim.
 
 	// Step 15: Record in replay cache (nonce outpoint → txid + challenge hash)
 	if cfg.ReplayCache != nil && originalChallenge.NonceUTXO != nil {
@@ -404,6 +434,12 @@ func handleProof(w http.ResponseWriter, r *http.Request, next http.Handler, proo
 		w.Header().Set(StatusHeader, "accepted")
 	}
 
+	// Step 14b: Delete challenge from cache now that payment is fully accepted (single-use).
+	// This runs only on the 200 path (mempool-visible or no mempool check required).
+	if cfg.ChallengeCache != nil {
+		cfg.ChallengeCache.Delete(proof.ChallengeSHA256)
+	}
+
 	logger.Info("payment accepted",
 		"txid", computedTxID,
 		"path", r.URL.Path,
@@ -430,6 +466,27 @@ func verifyNonceSpend(tx *transaction.Transaction, nonce *challenge.NonceRef) er
 		}
 	}
 	return fmt.Errorf("transaction does not spend nonce outpoint %s:%d", nonce.TxID, nonce.Vout)
+}
+
+// verifyNonceAtInput0 checks that the nonce outpoint is consumed at input
+// index 0. Required for Profile B (template mode) because the gateway's
+// SIGHASH_SINGLE signature on input 0 commits to output[0] (the payee output).
+// Uses constant-time comparison for txid.
+func verifyNonceAtInput0(tx *transaction.Transaction, nonce *challenge.NonceRef) error {
+	if nonce == nil {
+		return fmt.Errorf("challenge has no nonce_utxo")
+	}
+	if tx.InputCount() < 1 {
+		return fmt.Errorf("transaction has no inputs")
+	}
+	input0 := tx.Inputs[0]
+	if input0.SourceTXID == nil ||
+		!constantTimeEqual(input0.SourceTXID.String(), nonce.TxID) ||
+		input0.SourceTxOutIndex != nonce.Vout {
+		return fmt.Errorf("template mode requires nonce at input[0], but input[0] is %s:%d (expected %s:%d)",
+			input0.SourceTXID, input0.SourceTxOutIndex, nonce.TxID, nonce.Vout)
+	}
+	return nil
 }
 
 // verifyPayeeOutput checks that the transaction has at least one output

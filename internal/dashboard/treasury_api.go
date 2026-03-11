@@ -11,11 +11,16 @@
 package dashboard
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/bsv-blockchain/go-sdk/script"
+	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 
 	"github.com/merkle-works/x402-gateway/internal/pool"
 	"github.com/merkle-works/x402-gateway/internal/treasury"
@@ -99,9 +104,11 @@ type TreasuryUTXO struct {
 	Vout     uint32 `json:"vout"`
 	Script   string `json:"script"`
 	Satoshis uint64 `json:"satoshis"`
+	Status   string `json:"status,omitempty"` // "confirmed" or "mempool"
 }
 
-// handleTreasuryUTXOs returns unspent UTXOs at the treasury address.
+// handleTreasuryUTXOs returns unspent UTXOs at the treasury address,
+// including both confirmed and mempool UTXOs with their status.
 func (d *DashboardAPI) handleTreasuryUTXOs() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if d.watcher == nil {
@@ -112,7 +119,7 @@ func (d *DashboardAPI) handleTreasuryUTXOs() http.HandlerFunc {
 			return
 		}
 
-		utxos := d.watcher.GetUTXOs()
+		utxos := d.watcher.GetUTXOsWithStatus()
 		lastPoll, lastErr := d.watcher.LastPoll()
 
 		resp := TreasuryUTXOResponse{
@@ -130,6 +137,7 @@ func (d *DashboardAPI) handleTreasuryUTXOs() http.HandlerFunc {
 				Vout:     u.Vout,
 				Script:   u.Script,
 				Satoshis: u.Satoshis,
+				Status:   string(u.Status),
 			}
 		}
 		writeJSON(w, http.StatusOK, resp)
@@ -212,15 +220,26 @@ func (d *DashboardAPI) handleTreasuryFanout() http.HandlerFunc {
 
 		// Determine target address and output denomination for each pool
 		var targetAddr string
-		var outputSats uint64 = 1 // default for nonce and fee pools
+		var outputSats uint64 = 1 // default for nonce pool
 		switch req.Pool {
 		case "nonce":
 			targetAddr = d.keys.NonceAddress
 		case "fee":
 			targetAddr = d.keys.FeeAddress
+			outputSats = d.cfg.FeeUTXOSats // from FEE_UTXO_SATS env var (1–1000)
 		case "payment":
 			targetAddr = d.keys.PaymentAddress
 			outputSats = 100 // payment pool uses 100-sat UTXOs
+		}
+
+		// Lease the funding UTXO to prevent double-spend
+		if d.watcher != nil {
+			if err := d.watcher.LeaseFundingExplicit(req.FundingTxID, req.FundingVout, "fanout"); err != nil {
+				writeJSON(w, http.StatusConflict, map[string]any{
+					"error": fmt.Sprintf("cannot lease funding UTXO: %s", err),
+				})
+				return
+			}
 		}
 
 		// Build and broadcast fan-out transaction.
@@ -243,10 +262,45 @@ func (d *DashboardAPI) handleTreasuryFanout() http.HandlerFunc {
 			d.broadcaster,
 		)
 		if err != nil {
+			// Broadcast failed — release the lease so the UTXO is available again
+			if d.watcher != nil {
+				d.watcher.ReleaseLease(req.FundingTxID, req.FundingVout)
+			}
 			writeJSON(w, http.StatusInternalServerError, map[string]any{
 				"error": fmt.Sprintf("fan-out failed: %s", err),
 			})
 			return
+		}
+
+		// Successful broadcast — consume the lease and register change output
+		if d.watcher != nil {
+			d.watcher.ConsumeLease(req.FundingTxID, req.FundingVout)
+			d.watcher.RegisterMempool(result.ChangeUTXO)
+		}
+
+		// Profile B: generate templates for nonce pool UTXOs before adding to pool.
+		// Templates are derived artifacts — they must be created whenever new nonce
+		// UTXOs are minted, so the pool always contains complete UTXO+template pairs.
+		if req.Pool == "nonce" && d.cfg.TemplateMode {
+			payeeScript, err := derivePayeeLockingScriptHex(d.payeeAddr)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]any{
+					"error": fmt.Sprintf("failed to derive payee script for templates: %s", err),
+				})
+				return
+			}
+
+			if err := treasury.GenerateTemplates(
+				d.keys.NonceKey, result.UTXOs, payeeScript, d.cfg.TemplatePriceSats,
+			); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]any{
+					"error": fmt.Sprintf("template generation failed: %s", err),
+				})
+				return
+			}
+			slog.Info("generated templates for fanout nonce UTXOs",
+				"count", len(result.UTXOs),
+				"price_sats", d.cfg.TemplatePriceSats)
 		}
 
 		// Add new UTXOs to the appropriate pool
@@ -331,6 +385,25 @@ func (d *DashboardAPI) handleTreasurySweep() http.HandlerFunc {
 			return
 		}
 
+		// Lease all sweep inputs to prevent double-spend
+		if d.watcher != nil {
+			for _, inp := range req.Inputs {
+				if err := d.watcher.LeaseFundingExplicit(inp.TxID, inp.Vout, "sweep"); err != nil {
+					// Release any leases already acquired for this sweep
+					for _, prev := range req.Inputs {
+						if prev.TxID == inp.TxID && prev.Vout == inp.Vout {
+							break // reached the failed one
+						}
+						d.watcher.ReleaseLease(prev.TxID, prev.Vout)
+					}
+					writeJSON(w, http.StatusConflict, map[string]any{
+						"error": fmt.Sprintf("cannot lease sweep input %s:%d: %s", inp.TxID, inp.Vout, err),
+					})
+					return
+				}
+			}
+		}
+
 		result, err := treasury.BuildSweep(
 			signingKey,
 			d.mainnet,
@@ -342,10 +415,24 @@ func (d *DashboardAPI) handleTreasurySweep() http.HandlerFunc {
 			d.broadcaster,
 		)
 		if err != nil {
+			// Broadcast failed — release all leases
+			if d.watcher != nil {
+				for _, inp := range req.Inputs {
+					d.watcher.ReleaseLease(inp.TxID, inp.Vout)
+				}
+			}
 			writeJSON(w, http.StatusInternalServerError, map[string]any{
 				"error": fmt.Sprintf("sweep failed: %s", err),
 			})
 			return
+		}
+
+		// Successful broadcast — consume all leases and register output
+		if d.watcher != nil {
+			for _, inp := range req.Inputs {
+				d.watcher.ConsumeLease(inp.TxID, inp.Vout)
+			}
+			d.watcher.RegisterMempool(result.OutputUTXO)
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -356,4 +443,17 @@ func (d *DashboardAPI) handleTreasurySweep() http.HandlerFunc {
 			"fee":        result.Fee,
 		})
 	}
+}
+
+// derivePayeeLockingScriptHex converts a BSV address to a hex P2PKH locking script.
+func derivePayeeLockingScriptHex(addr string) (string, error) {
+	a, err := script.NewAddressFromString(addr)
+	if err != nil {
+		return "", fmt.Errorf("parse address %q: %w", addr, err)
+	}
+	s, err := p2pkh.Lock(a)
+	if err != nil {
+		return "", fmt.Errorf("create locking script: %w", err)
+	}
+	return hex.EncodeToString(*s), nil
 }

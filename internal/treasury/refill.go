@@ -31,7 +31,17 @@ type RefillConfig struct {
 	Key                *ec.PrivateKey         // signing key for fan-out tx
 	Mainnet            bool                   // network flag
 	Broadcaster        transaction.Broadcaster // for broadcasting the fan-out tx
-	FundingSource      FundingSource          // provides funding UTXOs for fan-out
+	FundingSource      FundingSource          // provides funding UTXOs for fan-out (read-only)
+	Watcher            *TreasuryWatcher       // treasury watcher for lease-based funding
+
+	// Profile B (Gateway Template) — only applies to nonce pool refills.
+	// When TemplateMode is true, templates are generated for newly created
+	// nonce UTXOs before they are added to the pool, ensuring every nonce
+	// UTXO enters the pool with a pre-signed template attached.
+	TemplateMode          bool           // generate templates for refilled nonce UTXOs
+	NonceKey              *ec.PrivateKey // signing key for template generation (may differ from Key)
+	PayeeLockingScriptHex string         // hex P2PKH locking script for template output
+	TemplatePriceSats     uint64         // price embedded in each template
 }
 
 // FundingSource provides funding UTXOs for fan-out transactions.
@@ -88,6 +98,8 @@ func StartRefillLoop(cfg RefillConfig, stop <-chan struct{}) {
 }
 
 // doRefillCheck performs a single refill check and triggers fan-out if needed.
+// When cfg.Watcher is set, uses LeaseFundingCandidate for atomic lease-based
+// funding to prevent double-spend of treasury UTXOs.
 func doRefillCheck(cfg RefillConfig, logger *slog.Logger) {
 	available := cfg.Pool.Available()
 
@@ -106,11 +118,6 @@ func doRefillCheck(cfg RefillConfig, logger *slog.Logger) {
 		"needed", needed,
 	)
 
-	if cfg.FundingSource == nil {
-		logger.Warn("no funding source configured, skipping refill")
-		return
-	}
-
 	// Calculate minimum funding needed: 1 sat per UTXO + estimated fee
 	// Fee estimate: ~34 bytes per output + 148 bytes input + 10 bytes overhead
 	estimatedSize := 10 + 148 + (needed * 34)
@@ -120,11 +127,32 @@ func doRefillCheck(cfg RefillConfig, logger *slog.Logger) {
 	}
 	minFunding := uint64(needed) + estimatedFee
 
-	funding, err := cfg.FundingSource.GetFunding(minFunding)
-	if err != nil {
-		logger.Error("failed to get funding", "error", err)
+	// Acquire funding — prefer lease-based approach via Watcher when available,
+	// fall back to read-only FundingSource for backward compatibility.
+	var funding *FundingUTXO
+	var err error
+	usedLease := false
+
+	if cfg.Watcher != nil {
+		funding, err = cfg.Watcher.LeaseFundingCandidate(minFunding, "refill")
+		if err != nil {
+			logger.Error("failed to lease funding", "error", err)
+			return
+		}
+		if funding != nil {
+			usedLease = true
+		}
+	} else if cfg.FundingSource != nil {
+		funding, err = cfg.FundingSource.GetFunding(minFunding)
+		if err != nil {
+			logger.Error("failed to get funding", "error", err)
+			return
+		}
+	} else {
+		logger.Warn("no funding source configured, skipping refill")
 		return
 	}
+
 	if funding == nil {
 		logger.Warn("no funding available for refill",
 			"min_sats_needed", minFunding,
@@ -143,7 +171,31 @@ func doRefillCheck(cfg RefillConfig, logger *slog.Logger) {
 	}, cfg.Broadcaster)
 	if err != nil {
 		logger.Error("fan-out failed", "error", err)
+		if usedLease {
+			cfg.Watcher.ReleaseLease(funding.TxID, funding.Vout)
+		}
 		return
+	}
+
+	// Successful broadcast — consume the lease and register change output
+	if usedLease {
+		cfg.Watcher.ConsumeLease(funding.TxID, funding.Vout)
+		cfg.Watcher.RegisterMempool(result.ChangeUTXO)
+	}
+
+	// Profile B: generate templates for nonce pool UTXOs before adding to pool.
+	// Templates are derived artifacts that must be created whenever new nonce
+	// UTXOs are minted, so the pool always contains complete UTXO+template pairs.
+	if cfg.TemplateMode && cfg.NonceKey != nil && cfg.PayeeLockingScriptHex != "" {
+		if err := GenerateTemplates(
+			cfg.NonceKey, result.UTXOs, cfg.PayeeLockingScriptHex, cfg.TemplatePriceSats,
+		); err != nil {
+			logger.Error("template generation failed during refill", "error", err)
+			return
+		}
+		logger.Info("generated templates for refill nonce UTXOs",
+			"count", len(result.UTXOs),
+			"price_sats", cfg.TemplatePriceSats)
 	}
 
 	// Add the new UTXOs to the pool

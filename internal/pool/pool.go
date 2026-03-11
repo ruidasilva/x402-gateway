@@ -69,6 +69,17 @@ type UTXO struct {
 	Status    Status    `json:"status"`
 	LeasedAt  time.Time `json:"leased_at,omitempty"`
 	ExpiresAt time.Time `json:"expires_at,omitempty"`
+
+	// Mode-segregation metadata: tracks UTXO provenance for integrity checks.
+	Synthetic  bool   `json:"synthetic,omitempty"`   // true for demo-generated UTXOs
+	OriginMode string `json:"origin_mode,omitempty"` // "mock" or "live" — mode when UTXO was created
+
+	// Profile B (Gateway Template mode) fields.
+	// Empty/zero for Profile A nonces and all fee/payment pool UTXOs.
+	RawTxTemplate     string `json:"rawtx_template,omitempty"`      // hex pre-signed template tx
+	TemplatePriceSats uint64 `json:"template_price_sats,omitempty"` // price embedded in template
+	EndpointClass     string `json:"endpoint_class,omitempty"`      // e.g. "basic"
+	TemplateVersion   uint32 `json:"template_version,omitempty"`    // schema version for future migrations (current: 1)
 }
 
 // Outpoint returns the canonical "txid:vout" string for this UTXO.
@@ -95,8 +106,10 @@ func uitoa(v uint32) string {
 
 // PoolStats provides aggregate statistics for a UTXO pool.
 type PoolStats struct {
-	Total     int `json:"total"`
-	Available int `json:"available"`
-	Leased    int `json:"leased"`
-	Spent     int `json:"spent"`
+	Total       int    `json:"total"`
+	Available   int    `json:"available"`
+	Leased      int    `json:"leased"`
+	Spent       int    `json:"spent"`
+	Quarantined int    `json:"quarantined"` // UTXOs removed by integrity check
+	UTXOValue   uint64 `json:"utxo_value"`  // denomination per UTXO (sats)
 }
