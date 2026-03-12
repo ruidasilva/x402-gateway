@@ -62,7 +62,7 @@ func (c *CompositeBroadcaster) Broadcast(tx *transaction.Transaction) (*transact
 	}
 
 	// Primary failed — classify the error
-	if !isTransportError(failure) {
+	if !shouldFallback(failure) {
 		// Application error (bad tx, double-spend, etc.) — do NOT fallback
 		c.recordHealth("gorilla", "broadcast", true, "") // service reachable, tx rejected
 		c.logger.Info("primary rejected tx (application error, no fallback)",
@@ -72,9 +72,9 @@ func (c *CompositeBroadcaster) Broadcast(tx *transaction.Transaction) (*transact
 		return nil, failure
 	}
 
-	// Transport error — try fallback
+	// Transport or policy error — try fallback
 	c.recordHealth("gorilla", "broadcast", false, failure.Code+": "+failure.Description)
-	c.logger.Warn("primary transport failure, falling back to WoC",
+	c.logger.Warn("primary failed, falling back to WoC",
 		"code", failure.Code,
 		"desc", failure.Description,
 	)
@@ -103,13 +103,13 @@ func (c *CompositeBroadcaster) BroadcastCtx(ctx context.Context, tx *transaction
 		return success, nil
 	}
 
-	if !isTransportError(failure) {
+	if !shouldFallback(failure) {
 		c.recordHealth("gorilla", "broadcast", true, "")
 		return nil, failure
 	}
 
 	c.recordHealth("gorilla", "broadcast", false, failure.Code+": "+failure.Description)
-	c.logger.Warn("primary transport failure (ctx), falling back to WoC",
+	c.logger.Warn("primary failed (ctx), falling back to WoC",
 		"code", failure.Code,
 	)
 
@@ -197,16 +197,23 @@ func (c *CompositeBroadcaster) recordHealth(service, role string, success bool, 
 }
 
 // ---------------------------------------------------------------------------
-// isTransportError — error classification for fallback decisions
+// shouldFallback — error classification for fallback decisions
 // ---------------------------------------------------------------------------
 
-// isTransportError returns true if the broadcast failure indicates a
-// transport/availability problem (network error, timeout, 5xx, rate limit)
-// where retrying on a different service makes sense.
+// shouldFallback returns true if the broadcast failure warrants retrying
+// on a different broadcaster service. This includes:
 //
-// Returns false for application-level errors (bad tx, double-spend, fee too low,
-// script validation failed) where the same rejection would occur on any miner.
-func isTransportError(f *transaction.BroadcastFailure) bool {
+//  1. Transport errors — network failures, timeouts, 5xx, rate limits.
+//     The tx is fine; the service is unavailable.
+//
+//  2. Miner policy differences — fee-too-low rejections (ARC 461/465).
+//     Fee policies are miner-specific: ARC may enforce a higher minimum
+//     than WoC, so a tx rejected by ARC may succeed via WoC. These are
+//     NOT universal application errors like double-spend or bad scripts.
+//
+// Returns false for truly universal application errors (bad tx structure,
+// double-spend, invalid script) where any miner would reject.
+func shouldFallback(f *transaction.BroadcastFailure) bool {
 	if f == nil {
 		return false
 	}
@@ -230,6 +237,18 @@ func isTransportError(f *transaction.BroadcastFailure) bool {
 		return true
 	}
 
+	// ARC fee-policy rejections — miner-specific, worth trying fallback.
+	// ARC uses 461 (fee too low) and 465 (fee too low after data carrier).
+	// These are NOT universal: WoC's fee policy may accept the same tx.
+	if code == "461" || code == "465" {
+		return true
+	}
+
+	// Description-based heuristics for fee rejections
+	if strings.Contains(desc, "fee") && (strings.Contains(desc, "too low") || strings.Contains(desc, "insufficient")) {
+		return true
+	}
+
 	// Description-based heuristics for network-level failures
 	transportPatterns := []string{
 		"connection refused",
@@ -248,6 +267,7 @@ func isTransportError(f *transaction.BroadcastFailure) bool {
 		}
 	}
 
-	// Everything else is application-level (400, 409, 461, 463, REJECTED, etc.)
+	// Everything else is a universal application error (409 double-spend,
+	// invalid script, malformed tx, etc.) — no point retrying on fallback.
 	return false
 }
