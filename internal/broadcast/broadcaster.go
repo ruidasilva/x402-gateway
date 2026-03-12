@@ -94,6 +94,34 @@ func (s *Swappable) IsMock() bool {
 	return s.Mode() == "mock"
 }
 
+// Health returns the HealthTracker from the inner broadcaster if it's a
+// CompositeBroadcaster. Returns nil otherwise (e.g. for WoC-only or mock).
+func (s *Swappable) Health() *HealthTracker {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	type healthProvider interface {
+		Health() *HealthTracker
+	}
+	if hp, ok := s.inner.(healthProvider); ok {
+		return hp.Health()
+	}
+	return nil
+}
+
+// SkipPrimary returns the circuit breaker state from the inner CompositeBroadcaster.
+// Returns false if the inner broadcaster is not a CompositeBroadcaster.
+func (s *Swappable) SkipPrimary() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	type circuitBreaker interface {
+		SkipPrimary() bool
+	}
+	if cb, ok := s.inner.(circuitBreaker); ok {
+		return cb.SkipPrimary()
+	}
+	return false
+}
+
 // CheckMempool delegates to the inner broadcaster if it implements MempoolChecker.
 // If the inner broadcaster does not implement MempoolChecker, returns (true, false, nil)
 // as a safe fallback (assumes visible).

@@ -13,6 +13,7 @@ import (
 	"context"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 
 	"github.com/bsv-blockchain/go-sdk/transaction"
 )
@@ -31,6 +32,12 @@ type CompositeBroadcaster struct {
 	fallback transaction.Broadcaster
 	health   *HealthTracker
 	logger   *slog.Logger
+
+	// skipPrimary is latched to 1 after a fee-policy rejection from the primary.
+	// Since the fee rate is constant at runtime, a fee rejection will recur on
+	// every broadcast — there's no point adding latency by retrying ARC each time.
+	// Status checks (CheckMempool) are NOT affected by this flag.
+	skipPrimary atomic.Int32
 }
 
 // NewCompositeBroadcaster creates a composite broadcaster.
@@ -52,11 +59,19 @@ func NewCompositeBroadcaster(
 // Broadcast tries the primary broadcaster first. On transport-level failure,
 // falls back to the secondary. Application-level failures are returned as-is.
 func (c *CompositeBroadcaster) Broadcast(tx *transaction.Transaction) (*transaction.BroadcastSuccess, *transaction.BroadcastFailure) {
+	// Circuit breaker: if primary was latched off (e.g. persistent fee-policy
+	// rejection), skip it entirely to avoid adding latency to every broadcast.
+	if c.skipPrimary.Load() != 0 {
+		c.recordStat(statPrimaryFailed, nil) // count as skipped
+		return c.broadcastFallback(tx)
+	}
+
 	// Try primary
 	success, failure := c.primary.Broadcast(tx)
 	if failure == nil {
 		// Primary succeeded
 		c.recordHealth("gorilla", "broadcast", true, "")
+		c.recordStat(statPrimarySuccess, failure)
 		c.logger.Debug("broadcast via primary (GorillaPool)", "txid", success.Txid)
 		return success, nil
 	}
@@ -72,21 +87,36 @@ func (c *CompositeBroadcaster) Broadcast(tx *transaction.Transaction) (*transact
 		return nil, failure
 	}
 
+	// Latch the circuit breaker on fee-policy rejections. The fee rate is
+	// constant at runtime, so ARC will reject every subsequent broadcast
+	// with the same error — skip it to avoid unnecessary latency.
+	if isFeePolicyReject(failure) {
+		if c.skipPrimary.CompareAndSwap(0, 1) {
+			c.logger.Warn("ARC fee-policy rejection — latching circuit breaker, routing all broadcasts to WoC",
+				"code", failure.Code,
+			)
+		}
+	}
+
 	// Transport or policy error — try fallback
 	c.recordHealth("gorilla", "broadcast", false, failure.Code+": "+failure.Description)
-	c.logger.Warn("primary failed, falling back to WoC",
-		"code", failure.Code,
-		"desc", failure.Description,
-	)
+	c.recordStat(statPrimaryFailed, failure)
 
-	success, failure = c.fallback.Broadcast(tx)
+	return c.broadcastFallback(tx)
+}
+
+// broadcastFallback sends the tx via the fallback broadcaster (WoC).
+func (c *CompositeBroadcaster) broadcastFallback(tx *transaction.Transaction) (*transaction.BroadcastSuccess, *transaction.BroadcastFailure) {
+	success, failure := c.fallback.Broadcast(tx)
 	if failure == nil {
 		c.recordHealth("woc", "broadcast", true, "")
-		c.logger.Info("broadcast via fallback (WoC)", "txid", success.Txid)
+		c.recordStat(statFallbackSuccess, nil)
+		c.logger.Debug("broadcast via fallback (WoC)", "txid", success.Txid)
 		return success, nil
 	}
 
 	c.recordHealth("woc", "broadcast", false, failure.Code+": "+failure.Description)
+	c.recordStat(statFallbackFailed, nil)
 	c.logger.Error("fallback also failed",
 		"code", failure.Code,
 		"desc", failure.Description,
@@ -94,32 +124,65 @@ func (c *CompositeBroadcaster) Broadcast(tx *transaction.Transaction) (*transact
 	return nil, failure
 }
 
-// BroadcastCtx is the context-aware version. Same primary→fallback logic.
+// BroadcastCtx is the context-aware version. Same primary→fallback logic
+// with circuit breaker support.
 func (c *CompositeBroadcaster) BroadcastCtx(ctx context.Context, tx *transaction.Transaction) (*transaction.BroadcastSuccess, *transaction.BroadcastFailure) {
+	// Circuit breaker: if primary was latched off, skip directly to fallback.
+	if c.skipPrimary.Load() != 0 {
+		c.recordStat(statPrimaryFailed, nil)
+		return c.broadcastFallbackCtx(ctx, tx)
+	}
+
 	// Try primary (context-aware if supported)
 	success, failure := broadcastWithCtx(c.primary, ctx, tx)
 	if failure == nil {
 		c.recordHealth("gorilla", "broadcast", true, "")
+		c.recordStat(statPrimarySuccess, failure)
+		c.logger.Debug("broadcast via primary (GorillaPool, ctx)", "txid", success.Txid)
 		return success, nil
 	}
 
+	// Primary failed — classify the error
 	if !shouldFallback(failure) {
 		c.recordHealth("gorilla", "broadcast", true, "")
+		c.logger.Info("primary rejected tx (application error, no fallback, ctx)",
+			"code", failure.Code,
+			"desc", failure.Description,
+		)
 		return nil, failure
 	}
 
-	c.recordHealth("gorilla", "broadcast", false, failure.Code+": "+failure.Description)
-	c.logger.Warn("primary failed (ctx), falling back to WoC",
-		"code", failure.Code,
-	)
+	// Latch circuit breaker on fee-policy rejections
+	if isFeePolicyReject(failure) {
+		if c.skipPrimary.CompareAndSwap(0, 1) {
+			c.logger.Warn("ARC fee-policy rejection (ctx) — latching circuit breaker, routing all broadcasts to WoC",
+				"code", failure.Code,
+			)
+		}
+	}
 
-	success, failure = broadcastWithCtx(c.fallback, ctx, tx)
+	c.recordHealth("gorilla", "broadcast", false, failure.Code+": "+failure.Description)
+	c.recordStat(statPrimaryFailed, failure)
+
+	return c.broadcastFallbackCtx(ctx, tx)
+}
+
+// broadcastFallbackCtx sends the tx via the fallback broadcaster with context.
+func (c *CompositeBroadcaster) broadcastFallbackCtx(ctx context.Context, tx *transaction.Transaction) (*transaction.BroadcastSuccess, *transaction.BroadcastFailure) {
+	success, failure := broadcastWithCtx(c.fallback, ctx, tx)
 	if failure == nil {
 		c.recordHealth("woc", "broadcast", true, "")
+		c.recordStat(statFallbackSuccess, nil)
+		c.logger.Debug("broadcast via fallback (WoC, ctx)", "txid", success.Txid)
 		return success, nil
 	}
 
 	c.recordHealth("woc", "broadcast", false, failure.Code+": "+failure.Description)
+	c.recordStat(statFallbackFailed, nil)
+	c.logger.Error("fallback also failed (ctx)",
+		"code", failure.Code,
+		"desc", failure.Description,
+	)
 	return nil, failure
 }
 
@@ -184,6 +247,12 @@ func (c *CompositeBroadcaster) Health() *HealthTracker {
 	return c.health
 }
 
+// SkipPrimary returns true if the circuit breaker has been latched
+// (primary is being skipped for broadcasts due to fee-policy rejection).
+func (c *CompositeBroadcaster) SkipPrimary() bool {
+	return c.skipPrimary.Load() != 0
+}
+
 // recordHealth records a success or failure in the health tracker.
 func (c *CompositeBroadcaster) recordHealth(service, role string, success bool, errMsg string) {
 	if c.health == nil {
@@ -194,6 +263,47 @@ func (c *CompositeBroadcaster) recordHealth(service, role string, success bool, 
 	} else {
 		c.health.RecordFailure(service, role, errMsg)
 	}
+}
+
+// Stat event types for recordStat.
+const (
+	statPrimarySuccess  = "primary_success"
+	statPrimaryFailed   = "primary_failed"
+	statFallbackSuccess = "fallback_success"
+	statFallbackFailed  = "fallback_failed"
+)
+
+// recordStat increments broadcast statistics in the health tracker.
+// failure is used to detect fee-policy rejections for the dedicated counter.
+func (c *CompositeBroadcaster) recordStat(event string, failure *transaction.BroadcastFailure) {
+	if c.health == nil {
+		return
+	}
+	switch event {
+	case statPrimarySuccess:
+		c.health.RecordPrimarySuccess()
+	case statPrimaryFailed:
+		c.health.RecordPrimaryFailed()
+		if failure != nil && isFeePolicyReject(failure) {
+			c.health.RecordFeePolicyReject()
+		}
+	case statFallbackSuccess:
+		c.health.RecordFallbackSuccess()
+	case statFallbackFailed:
+		c.health.RecordFallbackFailed()
+	}
+}
+
+// isFeePolicyReject returns true if the failure is a fee-policy rejection.
+func isFeePolicyReject(f *transaction.BroadcastFailure) bool {
+	if f == nil {
+		return false
+	}
+	if f.Code == "461" || f.Code == "465" {
+		return true
+	}
+	desc := strings.ToLower(f.Description)
+	return strings.Contains(desc, "fee") && (strings.Contains(desc, "too low") || strings.Contains(desc, "insufficient"))
 }
 
 // ---------------------------------------------------------------------------

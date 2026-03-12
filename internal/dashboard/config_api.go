@@ -215,7 +215,8 @@ func (d *DashboardAPI) handleUpdateConfig() http.HandlerFunc {
 }
 
 // handleBroadcasterHealth returns the health status of broadcaster services.
-// In composite mode, this reports per-service health for GorillaPool and WoC.
+// In composite mode, this reports per-service health, broadcast statistics,
+// and circuit breaker state for GorillaPool and WoC.
 // In non-composite modes, returns a minimal status.
 func (d *DashboardAPI) handleBroadcasterHealth() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -227,6 +228,8 @@ func (d *DashboardAPI) handleBroadcasterHealth() http.HandlerFunc {
 
 		if d.healthTracker != nil {
 			resp["services"] = d.healthTracker.All()
+			resp["stats"] = d.healthTracker.Stats()
+			resp["circuitBreakerOpen"] = d.broadcaster.SkipPrimary()
 		} else {
 			// Non-composite mode — single service, no granular health tracking
 			resp["services"] = map[string]any{}

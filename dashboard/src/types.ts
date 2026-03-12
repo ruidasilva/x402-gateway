@@ -49,6 +49,8 @@ export interface ConfigResponse {
 export interface BroadcasterHealthResponse {
   mode: string
   services: Record<string, ServiceHealth>
+  stats?: BroadcastStats
+  circuitBreakerOpen?: boolean
 }
 
 export interface ServiceHealth {
@@ -57,6 +59,15 @@ export interface ServiceHealth {
   lastError?: string
   service: string // "gorilla", "woc"
   role: string    // "broadcast", "status"
+}
+
+// Cumulative broadcast statistics (composite mode only)
+export interface BroadcastStats {
+  primarySuccess: number
+  primaryFailed: number
+  fallbackSuccess: number
+  fallbackFailed: number
+  feePolicyRejects: number
 }
 
 // Challenge data decoded from X402-Challenge header (base64url JSON)

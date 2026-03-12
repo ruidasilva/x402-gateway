@@ -7,12 +7,15 @@
 //     http://www.apache.org/licenses/LICENSE-2.0
 
 import { useState, useCallback } from 'react'
-import { getConfig, updateConfig } from '../api'
+import { getConfig, updateConfig, getBroadcasterHealth } from '../api'
 import { useApi } from '../hooks/useApi'
+import type { BroadcasterHealthResponse } from '../types'
 
 export default function SettingsTab() {
   const fetcher = useCallback(() => getConfig(), [])
   const { data: config, refresh } = useApi(fetcher)
+  const healthFetcher = useCallback(() => getBroadcasterHealth(), [])
+  const { data: health } = useApi<BroadcasterHealthResponse>(healthFetcher, 5000)
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const [restartWarning, setRestartWarning] = useState<string | null>(null)
@@ -271,6 +274,115 @@ export default function SettingsTab() {
           Save Changes
         </button>
       </div>
+
+      {/* Broadcaster Health & Stats (composite mode only) */}
+      {health && health.stats && (
+        <div className="card">
+          <div className="card-header">
+            <span className="card-title">Broadcaster Health</span>
+            <span className="card-subtitle" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              {health.circuitBreakerOpen ? (
+                <span
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 600,
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em',
+                    padding: '2px 6px',
+                    borderRadius: 4,
+                    background: 'rgba(245, 158, 11, 0.15)',
+                    color: '#f59e0b',
+                    border: '1px solid rgba(245, 158, 11, 0.3)',
+                  }}
+                >
+                  Circuit Breaker Active
+                </span>
+              ) : (
+                <span
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 600,
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em',
+                    padding: '2px 6px',
+                    borderRadius: 4,
+                    background: 'rgba(34, 197, 94, 0.15)',
+                    color: '#22c55e',
+                    border: '1px solid rgba(34, 197, 94, 0.3)',
+                  }}
+                >
+                  Normal
+                </span>
+              )}
+            </span>
+          </div>
+
+          {health.circuitBreakerOpen && (
+            <div
+              style={{
+                padding: '8px 12px',
+                margin: '0 0 8px 0',
+                borderRadius: 6,
+                background: 'rgba(245, 158, 11, 0.08)',
+                border: '1px solid rgba(245, 158, 11, 0.2)',
+                color: 'rgba(245, 158, 11, 0.9)',
+                fontSize: 12,
+                lineHeight: 1.5,
+              }}
+            >
+              ARC fee-policy rejection detected. All broadcasts routed directly to WoC to avoid latency.
+            </div>
+          )}
+
+          <div className="config-row">
+            <span className="config-key">Primary (ARC)</span>
+            <span className="config-value" style={{ display: 'flex', gap: 12 }}>
+              <span style={{ color: '#22c55e' }}>{health.stats.primarySuccess} ok</span>
+              <span style={{ color: '#ef4444' }}>{health.stats.primaryFailed} failed</span>
+            </span>
+          </div>
+          <div className="config-row">
+            <span className="config-key">Fallback (WoC)</span>
+            <span className="config-value" style={{ display: 'flex', gap: 12 }}>
+              <span style={{ color: '#22c55e' }}>{health.stats.fallbackSuccess} ok</span>
+              <span style={{ color: '#ef4444' }}>{health.stats.fallbackFailed} failed</span>
+            </span>
+          </div>
+          <div className="config-row">
+            <span className="config-key">Fee Policy Rejects</span>
+            <span className="config-value" style={{ color: health.stats.feePolicyRejects > 0 ? '#f59e0b' : 'inherit' }}>
+              {health.stats.feePolicyRejects}
+            </span>
+          </div>
+
+          {/* Per-service health indicators */}
+          {Object.values(health.services).length > 0 && (
+            <>
+              <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', margin: '8px 0' }} />
+              {Object.values(health.services).map((svc) => (
+                <div key={`${svc.service}:${svc.role}`} className="config-row">
+                  <span className="config-key" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: '50%',
+                        background: svc.healthy ? '#22c55e' : '#ef4444',
+                        display: 'inline-block',
+                        flexShrink: 0,
+                      }}
+                    />
+                    {svc.service} ({svc.role})
+                  </span>
+                  <span className="config-value" style={{ fontSize: 12, opacity: 0.7 }}>
+                    {svc.lastError || 'healthy'}
+                  </span>
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+      )}
     </div>
   )
 }
