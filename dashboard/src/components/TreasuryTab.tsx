@@ -8,7 +8,7 @@
 //
 
 import { useState, useCallback } from 'react'
-import { getTreasuryInfo, triggerFanout, getFanoutHistory, getTreasuryUTXOs, getConfig, sweepRevenue, reconcilePools } from '../api'
+import { getTreasuryInfo, triggerFanout, getFanoutHistory, getTreasuryUTXOs, getConfig, sweepRevenue, reconcilePools, getRevenue } from '../api'
 import { useApi } from '../hooks/useApi'
 import type { TreasuryUTXO, ConfigResponse } from '../types'
 import PoolStats from './PoolStats'
@@ -18,10 +18,12 @@ export default function TreasuryTab() {
   const historyFetcher = useCallback(() => getFanoutHistory(), [])
   const utxoFetcher = useCallback(() => getTreasuryUTXOs(), [])
   const configFetcher = useCallback(() => getConfig(), [])
+  const revenueFetcher = useCallback(() => getRevenue(), [])
   const { data: info, refresh: refreshInfo } = useApi(infoFetcher, 10000)
   const { data: historyData, refresh: refreshHistory } = useApi(historyFetcher, 10000)
   const { data: utxoData, refresh: refreshUTXOs } = useApi(utxoFetcher, 10000)
   const { data: config } = useApi(configFetcher, 30000)
+  const { data: revenue, refresh: refreshRevenue } = useApi(revenueFetcher, 5000)
 
   const [pool, setPool] = useState('fee')
   const [count, setCount] = useState('100')
@@ -66,6 +68,7 @@ export default function TreasuryTab() {
       setSweepResult({ type: 'success', text: `Swept ${res.inputCount} UTXOs (${res.inputSats} sats) to treasury (txid: ${res.txid})` })
       refreshInfo()
       refreshUTXOs()
+      refreshRevenue()
     } catch (err) {
       setSweepResult({ type: 'error', text: err instanceof Error ? err.message : String(err) })
     } finally {
@@ -229,13 +232,13 @@ export default function TreasuryTab() {
               border: '1px solid var(--border)',
             }}>
               <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.3px', marginBottom: 4 }}>
-                Average Price
+                Price per Payment
               </div>
               <div style={{ fontSize: 22, fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>
-                {formatSats(info.paymentPool.utxo_value || 0)}
+                {formatSats(config?.templatePriceSats || info.paymentPool.utxo_value || 0)}
               </div>
               <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
-                per payment UTXO
+                per settlement
               </div>
             </div>
             <div style={{
@@ -245,13 +248,13 @@ export default function TreasuryTab() {
               border: '1px solid var(--border)',
             }}>
               <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.3px', marginBottom: 4 }}>
-                Revenue Capacity
+                Total Revenue
               </div>
               <div style={{ fontSize: 22, fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--accent-green-text)' }}>
-                {formatSats(info.paymentPool.available * (info.paymentPool.utxo_value || 0))}
+                {formatSats(revenue?.totalSats ?? 0)}
               </div>
               <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
-                {info.paymentPool.available} payments at {formatSats(info.paymentPool.utxo_value || 0)} each
+                {revenue?.payments ?? 0} payments settled
               </div>
             </div>
           </div>
@@ -262,8 +265,7 @@ export default function TreasuryTab() {
       <div className="grid grid-3">
         {info.noncePool && <PoolStats label="Nonce" stats={info.noncePool} />}
         {info.feePool && <PoolStats label="Fee" stats={info.feePool} configuredUtxoValue={config?.feeUTXOSats} />}
-        {info.paymentPool && (
-          <div className="card">
+        <div className="card">
             <div className="card-header">
               <span className="card-title">Revenue</span>
               <span className="card-subtitle">incoming payments</span>
@@ -283,30 +285,42 @@ export default function TreasuryTab() {
                   Payments
                 </div>
                 <div style={{ fontSize: 16, fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--accent-blue)', marginTop: 2 }}>
-                  {info.paymentPool.total}
+                  {revenue?.payments ?? 0}
                 </div>
               </div>
               <div>
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.3px' }}>
-                  Total Value
+                  Total Revenue
                 </div>
                 <div style={{ fontSize: 16, fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--accent-green-text)', marginTop: 2 }}>
-                  {formatSats(info.paymentPool.available * (info.paymentPool.utxo_value || 0))}
+                  {formatSats(revenue?.totalSats ?? 0)}
                 </div>
               </div>
             </div>
+            {(revenue?.unsweptCount ?? 0) > 0 && (
+              <div style={{
+                fontSize: 12,
+                color: 'var(--text-secondary)',
+                marginBottom: 8,
+                padding: '6px 10px',
+                background: 'rgba(16, 185, 129, 0.06)',
+                borderRadius: 'var(--radius)',
+                border: '1px solid rgba(16, 185, 129, 0.15)',
+              }}>
+                <strong>{revenue?.unsweptCount}</strong> UTXOs ({formatSats(revenue?.unsweptSats ?? 0)}) ready to sweep
+              </div>
+            )}
             {sweepResult && <div className={`alert alert-${sweepResult.type}`} style={{ marginBottom: 8 }}>{sweepResult.text}</div>}
             <button
               className="btn btn-primary"
               style={{ width: '100%', fontSize: 12 }}
               onClick={handleSweepRevenue}
-              disabled={sweeping || info.paymentPool.available === 0}
+              disabled={sweeping || (revenue?.unsweptCount ?? 0) === 0}
             >
               {sweeping ? <span className="spinner" /> : null}
               Sweep to Treasury
             </button>
           </div>
-        )}
       </div>
 
       {/* Pool Reconciliation */}

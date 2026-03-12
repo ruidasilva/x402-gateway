@@ -408,13 +408,21 @@ func (p *RedisPool) loadUTXO(ctx context.Context, txid string, vout uint32) (*UT
 }
 
 // MarkSpent atomically marks a UTXO as spent.
+// Handles three cases:
+//  1. UTXO is in the available ZSET → Lua script removes it and marks spent
+//  2. UTXO is leased (removed from available) → script returns 0, fallback marks spent
+//  3. UTXO is already spent → fallback is idempotent (SADD to spent set, HSET status)
+//
+// The fallback is critical: without it, leased UTXOs skip the spent state entirely.
+// The reclaim loop sees status="leased" (not "spent") and returns the UTXO to
+// available, creating a zombie that causes txn-mempool-conflict on reuse.
 func (p *RedisPool) MarkSpent(txid string, vout uint32) {
 	ctx := context.Background()
 	outpoint := txid + ":" + uitoa(vout)
 	now := time.Now().Unix()
 
 	detKey := p.detailKey(txid, vout)
-	err := spendScript.Run(ctx, p.rdb, []string{
+	result, err := spendScript.Run(ctx, p.rdb, []string{
 		p.k(keyAvailable), // KEYS[1]
 		p.k(keySpent),     // KEYS[2]
 		detKey,            // KEYS[3]
@@ -424,11 +432,12 @@ func (p *RedisPool) MarkSpent(txid string, vout uint32) {
 		outpoint, // ARGV[2] - SET member
 		now,      // ARGV[3] - timestamp
 		0,        // ARGV[4] - satoshis (unused in current script)
-	).Err()
+	).Int64()
 
-	if err != nil {
-		// May already be spent (e.g., was leased and removed from available)
-		// Just update the details hash directly
+	if err != nil || result == 0 {
+		// UTXO was not in the available ZSET — either it's currently leased
+		// (removed from available during Lease()) or already spent.
+		// Mark as spent directly so the reclaim loop won't resurrect it.
 		p.rdb.HSet(ctx, detKey, "status", "spent", "spentAt", now)
 		p.rdb.SAdd(ctx, p.k(keySpent), outpoint)
 	}

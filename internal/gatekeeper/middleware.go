@@ -24,6 +24,7 @@ import (
 	"github.com/bsv-blockchain/go-sdk/transaction"
 
 	"github.com/merkle-works/x402-gateway/internal/challenge"
+	"github.com/merkle-works/x402-gateway/internal/pool"
 )
 
 const (
@@ -41,6 +42,9 @@ const (
 
 	// StatusHeader carries the mempool acceptance status (per spec).
 	StatusHeader = "X402-Status"
+
+	// AmountHeader carries the payment amount in satoshis (internal, for stats).
+	AmountHeader = "X402-Amount-Sats"
 )
 
 // Middleware returns an http.Handler middleware that gates access behind x402 payment.
@@ -287,6 +291,7 @@ func handleProof(w http.ResponseWriter, r *http.Request, next http.Handler, proo
 					cfg.NoncePool.MarkSpent(nonce.TxID, nonce.Vout)
 				}
 				w.Header().Set(StatusHeader, "accepted")
+				w.Header().Set(AmountHeader, fmt.Sprintf("%d", originalChallenge.AmountSats))
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -382,6 +387,17 @@ func handleProof(w http.ResponseWriter, r *http.Request, next http.Handler, proo
 		cfg.ReplayCache.Record(nonce.TxID, nonce.Vout, computedTxID, proof.ChallengeSHA256)
 	}
 
+	// Step 15b: Mark nonce UTXO as spent immediately after replay-cache recording.
+	// This must happen on BOTH the 200 and 202 paths. Once a valid proof has been
+	// recorded, the nonce is consumed regardless of mempool visibility — the
+	// transaction has been built and broadcast, so this nonce's on-chain outpoint
+	// is spent. Without this, the 202 path leaves the nonce as merely "leased",
+	// and the lease reclaim loop eventually returns it to "available" even though
+	// it's spent on-chain, causing txn-mempool-conflict on the next flow.
+	if cfg.NoncePool != nil && originalChallenge.NonceUTXO != nil {
+		cfg.NoncePool.MarkSpent(originalChallenge.NonceUTXO.TxID, originalChallenge.NonceUTXO.Vout)
+	}
+
 	// Step 16: Mempool acceptance matrix (CRIT-04)
 	// Per Protocol-Spec:
 	//   200 = mempool-visible → serve protected response
@@ -454,9 +470,50 @@ func handleProof(w http.ResponseWriter, r *http.Request, next http.Handler, proo
 		cfg.NoncePool.MarkSpent(originalChallenge.NonceUTXO.TxID, originalChallenge.NonceUTXO.Vout)
 	}
 
+	// Set payment amount header for stats collector (read by loggingMiddleware)
+	w.Header().Set(AmountHeader, fmt.Sprintf("%d", originalChallenge.AmountSats))
+
+	// Find the payee output for settlement tracking.
+	// In Profile B, the payee output is always at vout 0 (SIGHASH_SINGLE at input[0]
+	// commits to output[0]). We scan all outputs to handle both profiles correctly.
+	var payeeVout uint32
+	var payeeSats uint64
+	var payeeScript string
+	for idx, out := range tx.Outputs {
+		scriptHex := hex.EncodeToString(*out.LockingScript)
+		if constantTimeEqual(scriptHex, cfg.PayeeLockingScriptHex) && int64(out.Satoshis) >= originalChallenge.AmountSats {
+			payeeVout = uint32(idx)
+			payeeSats = out.Satoshis
+			payeeScript = scriptHex
+			break
+		}
+	}
+
+	// Record settlement revenue + UTXO details (persistent — Redis-backed).
+	// The UTXO info allows sweep-to-treasury without an indexer query.
+	if cfg.SettlementRecorder != nil {
+		cfg.SettlementRecorder.RecordSettlement(originalChallenge.AmountSats, computedTxID, payeeVout, payeeSats, payeeScript)
+	}
+
+	// Track the settlement output in the payment pool so it can be swept to treasury.
+	if cfg.PaymentPool != nil && payeeScript != "" {
+		cfg.PaymentPool.AddExisting([]pool.UTXO{{
+			TxID:     computedTxID,
+			Vout:     payeeVout,
+			Script:   payeeScript,
+			Satoshis: payeeSats,
+		}})
+		logger.Debug("tracked settlement output in payment pool",
+			"txid", computedTxID,
+			"vout", payeeVout,
+			"satoshis", payeeSats,
+		)
+	}
+
 	logger.Info("payment accepted",
 		"txid", computedTxID,
 		"path", r.URL.Path,
+		"amount_sats", originalChallenge.AmountSats,
 		"nonce", nonceRefString(originalChallenge.NonceUTXO),
 		"receipt", receiptHash,
 	)

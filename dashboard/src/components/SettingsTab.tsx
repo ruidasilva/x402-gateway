@@ -229,7 +229,8 @@ export default function SettingsTab() {
             onChange={(e) => setBroadcaster(e.target.value)}
           >
             <option value="mock">Mock (demo — transactions not broadcast)</option>
-            <option value="woc">WhatsonChain (live — broadcast to network)</option>
+            <option value="woc">WhatsOnChain (live — WoC only)</option>
+            <option value="composite">Composite (GorillaPool primary + WoC fallback)</option>
           </select>
           {broadcaster !== config.broadcaster && (
             <div style={{ marginTop: 4, fontSize: 12, color: '#f59e0b' }}>

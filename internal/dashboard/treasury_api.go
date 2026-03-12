@@ -445,40 +445,96 @@ func (d *DashboardAPI) handleTreasurySweep() http.HandlerFunc {
 	}
 }
 
-// handleSweepRevenue sweeps all available payment pool UTXOs back to the treasury address.
+// handleSweepRevenue sweeps settlement revenue UTXOs back to the treasury address.
+//
+// Settlement payments land at the payee address (PAYEE_ADDRESS or the fee address
+// by default). This handler reads tracked settlement UTXOs directly from the
+// RevenueTracker — no WoC/indexer query needed.
+//
+// Flow:
+//  1. Pull unswept UTXOs from the revenue tracker (primary — always works)
+//  2. If none tracked, fall back to WoC query (handles pre-upgrade settlements)
+//  3. Sign with the correct key for the payee address
+//  4. After successful broadcast, mark UTXOs as swept in the tracker
 func (d *DashboardAPI) handleSweepRevenue() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		utxos, err := d.paymentPool.ListAvailable()
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{
-				"error": fmt.Sprintf("failed to list payment pool UTXOs: %s", err),
-			})
-			return
-		}
-		if len(utxos) == 0 {
-			writeJSON(w, http.StatusBadRequest, map[string]any{
-				"error": "no revenue UTXOs available to sweep",
-			})
-			return
+		// Determine the signing key for the payee address
+		signingKey := d.keys.PaymentKey // default
+		switch d.payeeAddr {
+		case d.keys.FeeAddress:
+			signingKey = d.keys.FeeKey
+		case d.keys.PaymentAddress:
+			signingKey = d.keys.PaymentKey
+		case d.keys.NonceAddress:
+			signingKey = d.keys.NonceKey
+		case d.keys.TreasuryAddress:
+			signingKey = d.keys.TreasuryKey
 		}
 
-		// Convert pool UTXOs to sweep inputs
-		inputs := make([]treasury.SweepInput, len(utxos))
-		for i, u := range utxos {
-			inputs[i] = treasury.SweepInput{
-				TxID:     u.TxID,
-				Vout:     u.Vout,
-				Script:   u.Script,
-				Satoshis: u.Satoshis,
+		// Primary: get unswept settlement UTXOs from the revenue tracker.
+		// These are recorded at settlement time — no indexer query needed.
+		var inputs []treasury.SweepInput
+		var trackedOutpoints []string // for MarkSwept after success
+
+		if d.revenueTracker != nil {
+			unswept := d.revenueTracker.ListUnsweptUTXOs()
+			for _, u := range unswept {
+				inputs = append(inputs, treasury.SweepInput{
+					TxID:     u.TxID,
+					Vout:     u.Vout,
+					Script:   u.Script,
+					Satoshis: u.Satoshis,
+				})
+				trackedOutpoints = append(trackedOutpoints, fmt.Sprintf("%s:%d", u.TxID, u.Vout))
 			}
 		}
 
-		// Note: no watcher leasing here — payment pool UTXOs live at the payment
-		// address, not the treasury address, so the treasury watcher doesn't track them.
-		// The pool's own state (ListAvailable → MarkSpent) prevents double-spend.
+		// Fallback: if no tracked UTXOs, try WoC for pre-upgrade settlements.
+		// This path is only needed for settlements recorded before UTXO tracking
+		// was added. Once all old settlements are swept, this path is never hit.
+		if len(inputs) == 0 {
+			minSats := uint64(d.cfg.TemplatePriceSats)
+			if minSats == 0 {
+				minSats = 10
+			}
+
+			wocUTXOs, err := fetchPayeeUnspent(d.payeeAddr, d.mainnet)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]any{
+					"error": "no tracked settlement UTXOs to sweep (pre-upgrade settlements require WoC, which is currently unavailable)",
+				})
+				return
+			}
+
+			payeeScriptHex, err := derivePayeeLockingScriptHex(d.payeeAddr)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]any{
+					"error": fmt.Sprintf("failed to derive payee script: %s", err),
+				})
+				return
+			}
+
+			for _, u := range wocUTXOs {
+				if uint64(u.Value) >= minSats {
+					inputs = append(inputs, treasury.SweepInput{
+						TxID:     u.TxHash,
+						Vout:     uint32(u.TxPos),
+						Script:   payeeScriptHex,
+						Satoshis: uint64(u.Value),
+					})
+				}
+			}
+		}
+
+		if len(inputs) == 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "no settlement UTXOs available to sweep",
+			})
+			return
+		}
 
 		result, err := treasury.BuildSweep(
-			d.keys.PaymentKey,
+			signingKey,
 			d.mainnet,
 			treasury.SweepRequest{
 				Inputs:      inputs,
@@ -499,20 +555,64 @@ func (d *DashboardAPI) handleSweepRevenue() http.HandlerFunc {
 			d.watcher.RegisterMempool(result.OutputUTXO)
 		}
 
-		// Mark all swept UTXOs as spent in the payment pool
-		for _, u := range utxos {
-			d.paymentPool.MarkSpent(u.TxID, u.Vout)
+		// Mark swept UTXOs in the revenue tracker so they're not swept again
+		if d.revenueTracker != nil && len(trackedOutpoints) > 0 {
+			d.revenueTracker.MarkSwept(trackedOutpoints)
+		}
+
+		// Also mark in payment pool if applicable
+		if d.payeeAddr == d.keys.PaymentAddress {
+			for _, inp := range inputs {
+				d.paymentPool.MarkSpent(inp.TxID, inp.Vout)
+			}
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"success":    true,
 			"txid":       result.TxID,
-			"inputCount": len(utxos),
+			"inputCount": len(inputs),
 			"inputSats":  result.InputSats,
 			"outputSats": result.OutputSats,
 			"fee":        result.Fee,
 		})
 	}
+}
+
+// wocUnspentItem matches the WoC /address/{addr}/unspent JSON response.
+type wocUnspentItem struct {
+	TxHash string `json:"tx_hash"`
+	TxPos  int    `json:"tx_pos"`
+	Value  int64  `json:"value"`
+	Height int    `json:"height"`
+}
+
+// fetchPayeeUnspent queries WoC for unspent UTXOs at the given address.
+func fetchPayeeUnspent(address string, mainnet bool) ([]wocUnspentItem, error) {
+	network := "main"
+	if !mainnet {
+		network = "test"
+	}
+	url := fmt.Sprintf("https://api.whatsonchain.com/v1/bsv/%s/address/%s/unspent", network, address)
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("WoC request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("WoC returned HTTP %d", resp.StatusCode)
+	}
+
+	var items []wocUnspentItem
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		return nil, fmt.Errorf("parse response: %w", err)
+	}
+	return items, nil
 }
 
 // derivePayeeLockingScriptHex converts a BSV address to a hex P2PKH locking script.

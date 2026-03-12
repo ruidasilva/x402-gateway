@@ -19,7 +19,14 @@
 		{
 			"key": "broadcastUrl",
 			"value": "https://api.whatsonchain.com/v1/bsv/main/tx/raw",
-			"type": "string"
+			"type": "string",
+			"description": "WoC broadcast endpoint (fallback or standalone)"
+		},
+		{
+			"key": "arcUrl",
+			"value": "https://arc.gorillapool.io/v1",
+			"type": "string",
+			"description": "GorillaPool ARC base URL (primary broadcast in composite mode)"
 		}
 	],
 	"item": [
@@ -332,7 +339,7 @@
 								"{{broadcastUrl}}"
 							]
 						},
-						"description": "Step 4 of 6: Broadcast the completed transaction to the BSV network. The gateway will only accept the proof once the transaction becomes visible in the mempool.\n\nThe default broadcast endpoint is WhatsOnChain:\n  POST https://api.whatsonchain.com/v1/bsv/main/tx/raw\n\nAlternative broadcasters (change the broadcastUrl collection variable):\n  - GorillaPool MAPI: https://mapi.gorillapool.io/mapi/tx\n  - ARC: https://arc.taal.com/v1/tx\n\nExpected response: 200 or 202 with a txid confirming acceptance."
+						"description": "Step 4 of 6: Broadcast the completed transaction to the BSV network. The gateway will only accept the proof once the transaction becomes visible in the mempool.\n\nBroadcast endpoints (change the broadcastUrl collection variable):\n\n  WhatsOnChain (default):\n    POST https://api.whatsonchain.com/v1/bsv/main/tx/raw\n    Content-Type: application/json\n    Body: {\"txhex\": \"<hex>\"}\n\n  GorillaPool ARC (recommended primary):\n    POST https://arc.gorillapool.io/v1/tx\n    Content-Type: application/json\n    Body: {\"rawTx\": \"<hex>\"}\n    Note: ARC uses \"rawTx\" (not \"txhex\"). Also accepts application/octet-stream (raw bytes) and text/plain (hex string).\n\nExpected response: 200 or 202 with a txid confirming acceptance."
 					},
 					"response": [],
 					"event": [

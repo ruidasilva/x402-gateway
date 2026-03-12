@@ -43,8 +43,12 @@ type Config struct {
 	// Fee rate in sat/byte (BSV standard: 1 sat/KB = 0.001 sat/byte)
 	FeeRate float64
 
-	// Broadcaster type: "woc" or "arc"
+	// Broadcaster type: "mock", "woc", or "composite"
 	Broadcaster string
+
+	// GorillaPool ARC configuration (used when Broadcaster="composite")
+	ArcURL    string // ARC_URL (default: https://arc.gorillapool.io/v1)
+	ArcAPIKey string // ARC_API_KEY (optional Bearer token)
 
 	// Daily fee budget in satoshis (0 = unlimited)
 	DailyFeeBudget uint64
@@ -93,6 +97,8 @@ func Load() (*Config, error) {
 		LeaseTTL:       leaseTTL,
 		FeeRate:        envFloatOrDefault("FEE_RATE", 0),
 		Broadcaster:    os.Getenv("BROADCASTER"),
+		ArcURL:         envOrDefault("ARC_URL", "https://arc.gorillapool.io/v1"),
+		ArcAPIKey:      os.Getenv("ARC_API_KEY"),
 		DailyFeeBudget:         uint64(envIntOrDefault("DAILY_FEE_BUDGET", 0)),
 		RedisURL:               os.Getenv("REDIS_URL"),
 		RedisEnabled:           envBoolOrDefault("REDIS_ENABLED", false),
@@ -128,7 +134,13 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("FEE_RATE is required (set in .env, e.g. FEE_RATE=0.001 for BSV standard 1 sat/KB)")
 	}
 	if cfg.Broadcaster == "" {
-		return nil, fmt.Errorf("BROADCASTER is required (set in .env, e.g. BROADCASTER=mock or BROADCASTER=woc)")
+		return nil, fmt.Errorf("BROADCASTER is required (set in .env, e.g. BROADCASTER=mock, BROADCASTER=woc, or BROADCASTER=composite)")
+	}
+	switch cfg.Broadcaster {
+	case "mock", "woc", "composite":
+		// valid
+	default:
+		return nil, fmt.Errorf("BROADCASTER must be \"mock\", \"woc\", or \"composite\", got %q", cfg.Broadcaster)
 	}
 	if cfg.FeeUTXOSats < 1 || cfg.FeeUTXOSats > 1000 {
 		return nil, fmt.Errorf("FEE_UTXO_SATS must be between 1 and 1000, got %d", cfg.FeeUTXOSats)

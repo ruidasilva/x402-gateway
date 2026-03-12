@@ -42,6 +42,7 @@ type ConfigResponse struct {
 	DelegatorEmbedded      bool    `json:"delegatorEmbedded"` // true if delegator is hosted in-process
 	BroadcasterURL         string  `json:"broadcasterUrl,omitempty"` // URL for the broadcaster (if available)
 	Mode                   string  `json:"mode"`                     // "mock" or "live" (runtime mode for pool namespace)
+	ArcURL                 string  `json:"arcUrl,omitempty"`         // GorillaPool ARC URL (composite mode only)
 }
 
 // ConfigUpdateRequest is the subset of config that can be changed at runtime.
@@ -102,6 +103,11 @@ func (d *DashboardAPI) handleGetConfig() http.HandlerFunc {
 			Mode:                   d.cfg.RuntimeMode(),
 		}
 
+		// Include ARC URL when running in composite mode
+		if d.broadcaster.Mode() == "composite" {
+			resp.ArcURL = d.cfg.ArcURL
+		}
+
 		writeJSON(w, http.StatusOK, resp)
 	}
 }
@@ -157,9 +163,9 @@ func (d *DashboardAPI) handleUpdateConfig() http.HandlerFunc {
 
 		if req.Broadcaster != nil {
 			newMode := *req.Broadcaster
-			if newMode != "mock" && newMode != "woc" {
+			if newMode != "mock" && newMode != "woc" && newMode != "composite" {
 				writeJSON(w, http.StatusBadRequest, map[string]any{
-					"error": "broadcaster must be \"mock\" or \"woc\"",
+					"error": "broadcaster must be \"mock\", \"woc\", or \"composite\"",
 				})
 				return
 			}
@@ -167,8 +173,16 @@ func (d *DashboardAPI) handleUpdateConfig() http.HandlerFunc {
 				switch newMode {
 				case "woc":
 					d.broadcaster.Swap(broadcast.NewWoCBroadcaster(d.mainnet), "woc")
+					d.healthTracker = nil
+				case "composite":
+					ht := broadcast.NewHealthTracker()
+					primary := broadcast.NewGorillaPoolBroadcaster(d.cfg.ArcURL, d.cfg.ArcAPIKey)
+					fallback := broadcast.NewWoCBroadcaster(d.mainnet)
+					d.broadcaster.Swap(broadcast.NewCompositeBroadcaster(primary, fallback, ht), "composite")
+					d.healthTracker = ht
 				case "mock":
 					d.broadcaster.Swap(&broadcast.MockBroadcaster{}, "mock")
+					d.healthTracker = nil
 				}
 				d.cfg.Broadcaster = newMode
 				updated["broadcaster"] = newMode
@@ -197,6 +211,40 @@ func (d *DashboardAPI) handleUpdateConfig() http.HandlerFunc {
 			resp["restart_reason"] = restartReason
 		}
 		writeJSON(w, http.StatusOK, resp)
+	}
+}
+
+// handleBroadcasterHealth returns the health status of broadcaster services.
+// In composite mode, this reports per-service health for GorillaPool and WoC.
+// In non-composite modes, returns a minimal status.
+func (d *DashboardAPI) handleBroadcasterHealth() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		mode := d.broadcaster.Mode()
+
+		resp := map[string]any{
+			"mode": mode,
+		}
+
+		if d.healthTracker != nil {
+			resp["services"] = d.healthTracker.All()
+		} else {
+			// Non-composite mode — single service, no granular health tracking
+			resp["services"] = map[string]any{}
+		}
+
+		writeJSON(w, http.StatusOK, resp)
+	}
+}
+
+// handleRevenue returns persistent settlement revenue statistics.
+// Backed by Redis for persistence across restarts, with in-memory fallback.
+func (d *DashboardAPI) handleRevenue() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if d.revenueTracker == nil {
+			writeJSON(w, http.StatusOK, RevenueStats{})
+			return
+		}
+		writeJSON(w, http.StatusOK, d.revenueTracker.Stats())
 	}
 }
 

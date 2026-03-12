@@ -53,6 +53,22 @@ type Config struct {
 	// BindHeaders specifies which request headers to include in the challenge binding.
 	// Defaults to HeaderAllowlist if empty.
 	BindHeaders []string
+
+	// SettlementRecorder is called on every successful 200 OK settlement.
+	// If nil, settlement recording is skipped.
+	SettlementRecorder SettlementRecorder
+
+	// PaymentPool receives settlement revenue UTXOs. When a settlement succeeds
+	// (200 OK), the payee output is added to this pool so it can later be swept
+	// to the treasury address. If nil, settlement UTXO tracking is skipped.
+	PaymentPool pool.Pool
+}
+
+// SettlementRecorder records successful payment settlements for revenue tracking.
+// amountSats is the challenge price; txid/vout/satoshis/scriptHex describe the
+// payee output UTXO so it can be swept to treasury without an indexer query.
+type SettlementRecorder interface {
+	RecordSettlement(amountSats int64, txid string, vout uint32, satoshis uint64, scriptHex string)
 }
 
 // HeaderAllowlist defines headers included in canonical request hash (per spec).

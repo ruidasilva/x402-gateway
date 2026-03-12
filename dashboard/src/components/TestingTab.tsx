@@ -95,6 +95,7 @@ export default function TestingTab() {
   const [timeline, setTimeline] = useState<TimelineState>({ ...INITIAL_TIMELINE })
   const [broadcastToMempoolMs, setBroadcastToMempoolMs] = useState<number | undefined>(undefined)
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const pollCountRef = useRef(0)
 
   // Goal 1: Settlement details state
   const [settlementDetails, setSettlementDetails] = useState<SettlementDetails>({})
@@ -110,7 +111,7 @@ export default function TestingTab() {
     getConfig().then(setConfig).catch(() => {})
     // Cleanup polling on unmount
     return () => {
-      if (pollingRef.current) clearInterval(pollingRef.current)
+      if (pollingRef.current) clearTimeout(pollingRef.current)
     }
   }, [])
 
@@ -127,9 +128,10 @@ export default function TestingTab() {
 
   const stopPolling = useCallback(() => {
     if (pollingRef.current) {
-      clearInterval(pollingRef.current)
+      clearTimeout(pollingRef.current)
       pollingRef.current = null
     }
+    pollCountRef.current = 0
   }, [])
 
   async function runFlow() {
@@ -339,10 +341,41 @@ export default function TestingTab() {
         updateTimeline('mempool', { status: 'pending', timestamp: Date.now(), details: 'Waiting for mempool...', meta: { polling: 'every 2s' } })
         setSettlementDetails((prev) => ({ ...prev, mempoolVisibility: 'Pending — polling...' }))
 
-        // Poll every 2 seconds until 200 or error
+        // Progressive backoff polling: 2s for first 30s, then 10s up to 5min total.
+        // Low-fee transactions (1 sat/KB) can take time to propagate into the mempool.
+        const TIMEOUT_MS = 5 * 60 * 1000 // 5 minutes
+        const FAST_INTERVAL = 2000       // 2s for first phase
+        const SLOW_INTERVAL = 10000      // 10s after first 30s
+        const FAST_PHASE_MS = 30000      // first 30s is fast polling
         const pollProof = proofHeader
-        pollingRef.current = setInterval(async () => {
+        const pollStartTime = Date.now()
+        pollCountRef.current = 0
+
+        const schedulePoll = () => {
+          const elapsed = Date.now() - pollStartTime
+          const interval = elapsed < FAST_PHASE_MS ? FAST_INTERVAL : SLOW_INTERVAL
+          pollingRef.current = setTimeout(doPoll, interval)
+        }
+
+        const doPoll = async () => {
+          pollCountRef.current++
+          const elapsed = Date.now() - pollStartTime
           try {
+            // Timeout: stop after 5 minutes
+            if (elapsed > TIMEOUT_MS) {
+              stopPolling()
+              const mins = Math.round(elapsed / 60000)
+              updateStep(5, { status: 'error', detail: `Mempool poll timeout (${mins}min) — transaction may not have been accepted` })
+              updateTimeline('mempool', { status: 'error', timestamp: Date.now(), details: `Poll timeout (${mins}min)`, meta: { polls: String(pollCountRef.current) } })
+              setSettlementDetails((prev) => ({ ...prev, mempoolVisibility: 'Timeout — not detected' }))
+              setRunning(false)
+              return
+            }
+
+            // Update step detail with elapsed time
+            const elapsedSec = Math.round(elapsed / 1000)
+            updateStep(5, { status: 'active', detail: `202 Payment Pending — polling for mempool... (${elapsedSec}s)` })
+
             const retry = await testExpensiveEndpoint(pollProof)
             setResponses((prev) => ({ ...prev, 5: retry }))
 
@@ -369,8 +402,10 @@ export default function TestingTab() {
               updateStep(5, { status: 'error', detail: `Unexpected status: ${retry.status}` })
               updateTimeline('mempool', { status: 'error', timestamp: Date.now(), details: `Status ${retry.status}` })
               setRunning(false)
+            } else {
+              // 202 → schedule next poll (progressive backoff)
+              schedulePoll()
             }
-            // 202 → keep polling
           } catch (pollErr) {
             stopPolling()
             const msg = pollErr instanceof Error ? pollErr.message : String(pollErr)
@@ -378,7 +413,10 @@ export default function TestingTab() {
             updateTimeline('mempool', { status: 'error', timestamp: Date.now(), details: msg })
             setRunning(false)
           }
-        }, 2000)
+        }
+
+        // Start first poll
+        schedulePoll()
         return // don't set running=false yet — polling continues
       } else {
         updateStep(5, { status: 'error', detail: `Expected 200, got ${step6.status}` })
@@ -495,7 +533,9 @@ Client (Dashboard)
           <span style={{ fontSize: 13, color: 'var(--text-primary)' }}>
             {isDemo
               ? 'Mock Broadcaster — transactions are not broadcast to the BSV network.'
-              : 'Live Network — transactions are broadcast to the BSV network and verified via mempool detection.'}
+              : config?.broadcaster === 'composite'
+                ? 'Composite — GorillaPool ARC primary, WoC fallback. Transactions are broadcast to the BSV network.'
+                : 'Live Network — transactions are broadcast to the BSV network and verified via mempool detection.'}
           </span>
         </div>
       )}
@@ -763,7 +803,7 @@ Client (Dashboard)
             {/* Mode */}
             <DetailCell
               label="Broadcaster Mode"
-              value={config?.broadcaster === 'mock' ? 'Demo (mock)' : config?.broadcaster === 'woc' ? 'Live (WoC)' : config?.broadcaster || '—'}
+              value={config?.broadcaster === 'mock' ? 'Demo (mock)' : config?.broadcaster === 'composite' ? 'Composite (GorillaPool + WoC)' : config?.broadcaster === 'woc' ? 'Live (WoC)' : config?.broadcaster || '—'}
               color={isDemo ? 'var(--accent-yellow)' : 'var(--accent-green-text)'}
             />
 

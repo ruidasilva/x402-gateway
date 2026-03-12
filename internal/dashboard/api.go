@@ -25,18 +25,20 @@ import (
 
 // DashboardAPI provides HTTP handlers for the React dashboard.
 type DashboardAPI struct {
-	cfg         *config.Config
-	keys        *hdwallet.DerivedKeys
-	noncePool   pool.Pool
-	feePool     pool.Pool
-	paymentPool pool.Pool
-	stats       *StatsCollector
-	treasuryKey *ec.PrivateKey
-	mainnet     bool
-	broadcaster *broadcast.Swappable
-	startTime   time.Time
-	payeeAddr   string
-	watcher     *treasury.TreasuryWatcher // may be nil if watcher not configured
+	cfg           *config.Config
+	keys          *hdwallet.DerivedKeys
+	noncePool     pool.Pool
+	feePool       pool.Pool
+	paymentPool   pool.Pool
+	stats         *StatsCollector
+	treasuryKey   *ec.PrivateKey
+	mainnet       bool
+	broadcaster   *broadcast.Swappable
+	startTime     time.Time
+	payeeAddr     string
+	watcher        *treasury.TreasuryWatcher  // may be nil if watcher not configured
+	healthTracker  *broadcast.HealthTracker   // may be nil if not using composite broadcaster
+	revenueTracker *RevenueTracker            // persistent settlement revenue
 }
 
 // NewDashboardAPI creates a new dashboard API instance.
@@ -50,20 +52,24 @@ func NewDashboardAPI(
 	startTime time.Time,
 	payeeAddr string,
 	watcher *treasury.TreasuryWatcher,
+	healthTracker *broadcast.HealthTracker,
+	revenueTracker *RevenueTracker,
 ) *DashboardAPI {
 	return &DashboardAPI{
-		cfg:         cfg,
-		keys:        keys,
-		noncePool:   noncePool,
-		feePool:     feePool,
-		paymentPool: paymentPool,
-		stats:       NewStatsCollector(3600, time.Minute), // 1 hour of 1-min buckets
-		treasuryKey: treasuryKey,
-		mainnet:     mainnet,
-		broadcaster: bcast,
-		startTime:   startTime,
-		payeeAddr:   payeeAddr,
-		watcher:     watcher,
+		cfg:            cfg,
+		keys:           keys,
+		noncePool:      noncePool,
+		feePool:        feePool,
+		paymentPool:    paymentPool,
+		stats:          NewStatsCollector(3600, time.Minute), // 1 hour of 1-min buckets
+		treasuryKey:    treasuryKey,
+		mainnet:        mainnet,
+		broadcaster:    bcast,
+		startTime:      startTime,
+		payeeAddr:      payeeAddr,
+		watcher:        watcher,
+		healthTracker:  healthTracker,
+		revenueTracker: revenueTracker,
 	}
 }
 
@@ -92,7 +98,13 @@ func (d *DashboardAPI) RegisterRoutes(mux *http.ServeMux) {
 	// Pool reconciliation (checks UTXOs against blockchain, marks zombies as spent)
 	mux.HandleFunc("POST /api/v1/pools/reconcile", d.handleReconcilePools())
 
+	// Broadcaster health (composite mode)
+	mux.HandleFunc("GET /api/v1/health/broadcasters", d.handleBroadcasterHealth())
+
 	// Stats endpoints
 	mux.HandleFunc("GET /api/v1/stats/summary", d.handleStatsSummary())
 	mux.HandleFunc("GET /api/v1/stats/timeseries", d.handleStatsTimeseries())
+
+	// Revenue endpoint (persistent settlement counter)
+	mux.HandleFunc("GET /api/v1/revenue", d.handleRevenue())
 }

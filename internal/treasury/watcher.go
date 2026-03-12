@@ -92,6 +92,10 @@ type TreasuryWatcher struct {
 	interval   time.Duration
 	rdb        *redis.Client // nil if Redis not enabled
 	logger     *slog.Logger
+
+	// Rate-limit backoff: consecutive poll errors increase the wait before the
+	// next attempt. Reset to 0 on any successful poll.
+	consecutiveErrors int
 }
 
 // NewTreasuryWatcher creates a watcher for the given treasury address.
@@ -174,7 +178,27 @@ func (tw *TreasuryWatcher) Start(stop <-chan struct{}) {
 			select {
 			case <-ticker.C:
 				if err := tw.poll(); err != nil {
-					tw.logger.Error("poll failed", "error", err)
+					tw.consecutiveErrors++
+					// Exponential backoff: skip polls when rate-limited (2^n intervals, max ~5 min)
+					backoffMultiplier := 1 << min(tw.consecutiveErrors, 5)
+					tw.logger.Warn("poll failed, backing off",
+						"error", err,
+						"consecutive_errors", tw.consecutiveErrors,
+						"next_poll_delay", time.Duration(backoffMultiplier)*tw.interval,
+					)
+					// Sleep additional time for backoff (ticker continues ticking)
+					select {
+					case <-time.After(time.Duration(backoffMultiplier-1) * tw.interval):
+					case <-stop:
+						tw.logger.Info("treasury watcher stopped")
+						return
+					}
+				} else {
+					if tw.consecutiveErrors > 0 {
+						tw.logger.Info("poll recovered after backoff",
+							"previous_errors", tw.consecutiveErrors)
+					}
+					tw.consecutiveErrors = 0
 				}
 			case <-stop:
 				tw.logger.Info("treasury watcher stopped")

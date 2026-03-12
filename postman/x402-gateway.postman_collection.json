@@ -15,6 +15,18 @@
 			"key": "delegatorUrl",
 			"value": "http://localhost:8403",
 			"type": "string"
+		},
+		{
+			"key": "arcUrl",
+			"value": "https://arc.gorillapool.io/v1",
+			"type": "string",
+			"description": "GorillaPool ARC base URL (used in composite broadcaster mode)"
+		},
+		{
+			"key": "wocBroadcastUrl",
+			"value": "https://api.whatsonchain.com/v1/bsv/main/tx/raw",
+			"type": "string",
+			"description": "WhatsOnChain broadcast endpoint (fallback or standalone)"
 		}
 	],
 	"item": [
@@ -332,7 +344,7 @@
 							"host": ["{{gatewayUrl}}"],
 							"path": ["health"]
 						},
-						"description": "PLACEHOLDER: In production, the client broadcasts the completed_tx to the BSV network.\n\nIn demo mode (BROADCASTER=mock), this step is skipped because the mock broadcaster automatically accepts all transactions. The delegator already handled broadcast internally.\n\nThis request hits /health as a no-op to keep the step numbering consistent.\n\nFor production, you would POST the completedTxHex to a BSV node or use the WhatsOnChain API:\n  POST https://api.whatsonchain.com/v1/bsv/{network}/tx/raw\n  Body: {\"txhex\": \"<completedTxHex>\"}"
+						"description": "PLACEHOLDER: In production, the client broadcasts the completed_tx to the BSV network.\n\nIn demo mode (BROADCASTER=mock), this step is skipped because the mock broadcaster automatically accepts all transactions. The delegator already handled broadcast internally.\n\nThis request hits /health as a no-op to keep the step numbering consistent.\n\nFor production, broadcast options:\n\n  GorillaPool ARC (recommended primary):\n    POST https://arc.gorillapool.io/v1/tx\n    Content-Type: application/json\n    Body: {\"rawTx\": \"<completedTxHex>\"}\n    Note: ARC uses \"rawTx\" (not \"txhex\")\n\n  WhatsOnChain (fallback):\n    POST https://api.whatsonchain.com/v1/bsv/{network}/tx/raw\n    Content-Type: application/json\n    Body: {\"txhex\": \"<completedTxHex>\"}\n\nWhen using BROADCASTER=composite, the gateway proxies broadcast through GorillaPool ARC first with WoC fallback."
 					},
 					"response": [],
 					"event": [

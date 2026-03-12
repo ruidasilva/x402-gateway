@@ -143,6 +143,51 @@ func QuarantineCount(rdb *redis.Client, prefix string) int64 {
 	return count
 }
 
+// ValidateOnChainResult holds the outcome of on-chain UTXO validation.
+type ValidateOnChainResult struct {
+	Pool     string `json:"pool"`
+	Checked  int    `json:"checked"`
+	Valid    int    `json:"valid"`
+	Zombies  int    `json:"zombies"`
+	Leased   int    `json:"leased"`
+}
+
+// ValidateOnChain compares a pool's available UTXOs against a set of on-chain
+// unspent outpoints. Any available UTXO not in the on-chain set is a "zombie" —
+// it was spent on-chain but the pool still considers it available (typically due
+// to the lease reclaim loop returning a spent nonce before the MarkSpent fix).
+//
+// Zombie UTXOs are retired via MarkSpent so they're never re-issued.
+// Also retires any currently-leased UTXOs that are not in the on-chain set.
+//
+// onChainUnspent should be a set of "txid:vout" strings from the blockchain.
+func ValidateOnChain(p Pool, onChainUnspent map[string]bool, logger *slog.Logger) ValidateOnChainResult {
+	result := ValidateOnChainResult{Pool: p.Address()}
+
+	available, err := p.ListAvailable()
+	if err != nil {
+		logger.Error("on-chain validation: failed to list available UTXOs", "error", err)
+		return result
+	}
+
+	for _, u := range available {
+		result.Checked++
+		outpoint := u.Outpoint()
+		if onChainUnspent[outpoint] {
+			result.Valid++
+		} else {
+			p.MarkSpent(u.TxID, u.Vout)
+			result.Zombies++
+			logger.Warn("on-chain validation: retired zombie UTXO",
+				"outpoint", outpoint,
+				"address", p.Address(),
+			)
+		}
+	}
+
+	return result
+}
+
 // ParsePoolNameFromPrefix extracts the pool name from a namespaced prefix.
 // e.g. "live:nonce:" → "nonce", "mock:fee:" → "fee"
 func ParsePoolNameFromPrefix(prefix string) string {

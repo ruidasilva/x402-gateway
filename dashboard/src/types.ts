@@ -42,6 +42,21 @@ export interface ConfigResponse {
   delegatorEmbedded: boolean
   broadcasterUrl?: string
   mode: string // "mock" or "live" — runtime mode for pool namespace
+  arcUrl?: string // GorillaPool ARC URL (composite mode only)
+}
+
+// Broadcaster health status (from /api/v1/health/broadcasters)
+export interface BroadcasterHealthResponse {
+  mode: string
+  services: Record<string, ServiceHealth>
+}
+
+export interface ServiceHealth {
+  healthy: boolean
+  lastCheck: string
+  lastError?: string
+  service: string // "gorilla", "woc"
+  role: string    // "broadcast", "status"
 }
 
 // Challenge data decoded from X402-Challenge header (base64url JSON)
@@ -125,6 +140,15 @@ export interface FanoutHistoryEntry {
   pool: string
   count: number
   timestamp: string
+}
+
+// Persistent revenue statistics (from /api/v1/revenue)
+export interface RevenueStats {
+  payments: number
+  totalSats: number
+  lastTxid?: string
+  unsweptCount: number  // UTXOs available to sweep to treasury
+  unsweptSats: number   // total sats available to sweep
 }
 
 // SSE event from the event stream

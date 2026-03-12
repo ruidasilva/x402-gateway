@@ -7,7 +7,7 @@
 //     http://www.apache.org/licenses/LICENSE-2.0
 //
 
-import type { ConfigResponse, StatsSummary, TimeseriesPoint, TreasuryInfo, TreasuryUTXOsResponse, FanoutHistoryEntry, ChallengeData } from './types'
+import type { ConfigResponse, StatsSummary, TimeseriesPoint, TreasuryInfo, TreasuryUTXOsResponse, FanoutHistoryEntry, ChallengeData, BroadcasterHealthResponse, RevenueStats } from './types'
 
 const BASE = ''
 
@@ -84,9 +84,19 @@ export async function reconcilePools(): Promise<{
   return fetchJSON('/api/v1/pools/reconcile', { method: 'POST' })
 }
 
+// Revenue (persistent settlement tracker)
+export async function getRevenue(): Promise<RevenueStats> {
+  return fetchJSON('/api/v1/revenue')
+}
+
 // Health
 export async function getHealth(): Promise<Record<string, unknown>> {
   return fetchJSON('/health')
+}
+
+// Broadcaster health (composite mode — per-service status)
+export async function getBroadcasterHealth(): Promise<BroadcasterHealthResponse> {
+  return fetchJSON('/api/v1/health/broadcasters')
 }
 
 // Testing: x402 flow

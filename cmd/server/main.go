@@ -15,6 +15,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -45,6 +46,65 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
+}
+
+// wocUnspentItem matches the WoC /address/{addr}/unspent JSON response.
+type wocUnspentItem struct {
+	TxHash string `json:"tx_hash"`
+	TxPos  int    `json:"tx_pos"`
+	Value  int64  `json:"value"`
+	Height int    `json:"height"`
+}
+
+// fetchWoCUnspentItems queries WhatsOnChain for all unspent UTXOs at the given
+// address and returns the raw items with full details.
+func fetchWoCUnspentItems(address string, mainnet bool) ([]wocUnspentItem, error) {
+	network := "main"
+	if !mainnet {
+		network = "test"
+	}
+	url := fmt.Sprintf("https://api.whatsonchain.com/v1/bsv/%s/address/%s/unspent", network, address)
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("WoC request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read body: %w", err)
+	}
+
+	// WoC returns 404 for addresses with no history
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("WoC returned HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	var items []wocUnspentItem
+	if err := json.Unmarshal(body, &items); err != nil {
+		return nil, fmt.Errorf("parse WoC response: %w", err)
+	}
+	return items, nil
+}
+
+// fetchWoCUnspentSet queries WhatsOnChain for all unspent UTXOs at the given
+// address and returns a set of "txid:vout" strings. Used for zombie nonce
+// detection at startup.
+func fetchWoCUnspentSet(address string, mainnet bool) (map[string]bool, error) {
+	items, err := fetchWoCUnspentItems(address, mainnet)
+	if err != nil {
+		return nil, err
+	}
+	set := make(map[string]bool, len(items))
+	for _, item := range items {
+		set[fmt.Sprintf("%s:%d", item.TxHash, item.TxPos)] = true
+	}
+	return set, nil
 }
 
 func main() {
@@ -97,10 +157,22 @@ func main() {
 
 	// Select broadcaster based on config (wrapped in Swappable for hot-swap via dashboard)
 	var inner transaction.Broadcaster
+	var healthTracker *broadcast.HealthTracker
 	demoMode := false
 	switch cfg.Broadcaster {
 	case "woc":
 		inner = broadcast.NewWoCBroadcaster(mainnet)
+	case "composite":
+		// GorillaPool ARC primary + WoC fallback
+		healthTracker = broadcast.NewHealthTracker()
+		primary := broadcast.NewGorillaPoolBroadcaster(cfg.ArcURL, cfg.ArcAPIKey)
+		fallback := broadcast.NewWoCBroadcaster(mainnet)
+		inner = broadcast.NewCompositeBroadcaster(primary, fallback, healthTracker)
+		logger.Info("composite broadcaster configured",
+			"primary", "GorillaPool ARC",
+			"fallback", "WhatsOnChain",
+			"arc_url", cfg.ArcURL,
+		)
 	case "mock":
 		inner = &broadcast.MockBroadcaster{}
 		demoMode = true
@@ -322,6 +394,78 @@ func main() {
 		}
 	}
 
+	// On-chain zombie UTXO validation (live mode only)
+	// Fetches unspent UTXOs from WoC and retires any pool entries that are
+	// actually spent on-chain. This cleans up "zombie" nonces/fees that were
+	// reclaimed by the lease loop before the MarkSpent fix was deployed.
+	if !demoMode {
+		for _, pv := range []struct {
+			name    string
+			pool    pool.Pool
+			address string
+		}{
+			{"nonce", noncePool, keys.NonceAddress},
+			{"fee", feePool, keys.FeeAddress},
+		} {
+			onChain, err := fetchWoCUnspentSet(pv.address, mainnet)
+			if err != nil {
+				logger.Warn("on-chain validation: skipped (WoC unavailable)",
+					"pool", pv.name, "error", err)
+				continue
+			}
+			result := pool.ValidateOnChain(pv.pool, onChain, logger)
+			if result.Zombies > 0 {
+				logger.Warn("on-chain validation: retired zombie UTXOs",
+					"pool", pv.name,
+					"checked", result.Checked,
+					"valid", result.Valid,
+					"zombies", result.Zombies,
+				)
+			} else if result.Checked > 0 {
+				logger.Info("on-chain validation: pool clean",
+					"pool", pv.name,
+					"checked", result.Checked,
+					"valid", result.Valid,
+				)
+			}
+		}
+	}
+
+	// Payment pool hydration: discover on-chain settlement UTXOs at the payment
+	// address that were created before the settlement-time tracking was deployed.
+	// Uses Lookup() to avoid re-adding UTXOs the pool already knows about (any
+	// status: available, leased, or spent).
+	if !demoMode {
+		items, err := fetchWoCUnspentItems(keys.PaymentAddress, mainnet)
+		if err != nil {
+			logger.Warn("payment pool hydration: skipped (WoC unavailable)", "error", err)
+		} else if len(items) > 0 {
+			paymentScriptHex, _ := paymentPool.LockingScriptHex()
+			var newUTXOs []pool.UTXO
+			for _, item := range items {
+				if paymentPool.Lookup(item.TxHash, uint32(item.TxPos)) == nil {
+					newUTXOs = append(newUTXOs, pool.UTXO{
+						TxID:     item.TxHash,
+						Vout:     uint32(item.TxPos),
+						Script:   paymentScriptHex,
+						Satoshis: uint64(item.Value),
+					})
+				}
+			}
+			if len(newUTXOs) > 0 {
+				paymentPool.AddExisting(newUTXOs)
+				logger.Info("payment pool hydrated with on-chain settlement UTXOs",
+					"added", len(newUTXOs),
+					"already_tracked", len(items)-len(newUTXOs),
+					"address", keys.PaymentAddress,
+				)
+			} else {
+				logger.Info("payment pool hydration: all on-chain UTXOs already tracked",
+					"count", len(items), "address", keys.PaymentAddress)
+			}
+		}
+	}
+
 	// Create Treasury UTXO watcher (polls WoC for unspent UTXOs)
 	var watcher *treasury.TreasuryWatcher
 	if cfg.TreasuryPollInterval > 0 {
@@ -392,12 +536,15 @@ func main() {
 	// Record server start time for uptime tracking
 	startTime := time.Now()
 
+	// Create persistent revenue tracker (Redis-backed)
+	revenueTracker := dashboard.NewRevenueTracker(rdb, logger)
+
 	// Create dashboard API (React dashboard backend)
 	dashAPI := dashboard.NewDashboardAPI(
 		cfg, keys, noncePool, feePool, paymentPool,
 		keys.TreasuryKey, mainnet, bcast,
 		startTime, payeeAddr,
-		watcher,
+		watcher, healthTracker, revenueTracker,
 	)
 
 	// Start pool lease reclaim loops
@@ -494,6 +641,8 @@ func main() {
 		PricingFunc:           pricing.Fixed(100),
 		ChallengeTTL:          5 * time.Minute,
 		BindHeaders:           gatekeeper.HeaderAllowlist,
+		SettlementRecorder:    revenueTracker,
+		PaymentPool:           paymentPool,
 	}
 
 	expensive := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -570,6 +719,8 @@ func main() {
 	}
 	if demoMode {
 		fmt.Printf("  Mode:       demo (MockBroadcaster)\n")
+	} else if cfg.Broadcaster == "composite" {
+		fmt.Printf("  Mode:       live (composite: GorillaPool → WoC fallback)\n")
 	} else {
 		fmt.Printf("  Mode:       live (%s)\n", cfg.Broadcaster)
 	}
@@ -634,12 +785,19 @@ func loggingMiddleware(next http.Handler, eventBus *EventBus, stats *dashboard.S
 
 		// Record stats for dashboard analytics
 		if stats != nil {
+			var feeSats uint64
+			if amountStr := rw.Header().Get("X402-Amount-Sats"); amountStr != "" {
+				if v, err := fmt.Sscanf(amountStr, "%d", &feeSats); err != nil || v != 1 {
+					feeSats = 0
+				}
+			}
 			stats.Record(dashboard.RequestStat{
 				Timestamp: time.Now(),
 				Path:      r.URL.Path,
 				Method:    r.Method,
 				Status:    rw.status,
 				Duration:  duration,
+				FeeSats:   feeSats,
 			})
 		}
 
