@@ -28,11 +28,10 @@ func newTestWatcher(t *testing.T, baseURL string) *TreasuryWatcher {
 		t.Fatal(err)
 	}
 
-	tw, err := NewTreasuryWatcher(true, "1TestAddress", key, 60*time.Second, nil)
+	tw, err := NewTreasuryWatcher(true, "1TestAddress", key, 60*time.Second, nil, baseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	tw.baseURL = baseURL
 	return tw
 }
 

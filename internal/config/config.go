@@ -76,9 +76,26 @@ type Config struct {
 	DelegatorEmbedded bool // DELEGATOR_EMBEDDED (true = gateway hosts delegator in-process)
 	DelegatorURL      string // DELEGATOR_URL (for dashboard config, e.g. http://localhost:8403)
 
+	// WhatsOnChain API base URL override (optional)
+	WocApiURL string // WOC_API_URL (e.g. https://api.whatsonchain.com/v1/bsv/main)
+
 	// Backward-compatible aliases (deprecated, use PoolSize/LeaseTTL)
 	NoncePoolSize int
 	NonceLeaseTTL time.Duration
+}
+
+// WocBaseURL returns the effective WoC API base URL.
+// If WOC_API_URL is set, it is used verbatim. Otherwise, the URL is
+// derived from BSV_NETWORK (e.g. https://api.whatsonchain.com/v1/bsv/main).
+func (c *Config) WocBaseURL() string {
+	if c.WocApiURL != "" {
+		return c.WocApiURL
+	}
+	network := "test"
+	if c.IsMainnet() {
+		network = "main"
+	}
+	return fmt.Sprintf("https://api.whatsonchain.com/v1/bsv/%s", network)
 }
 
 // Load reads configuration from environment variables.
@@ -118,6 +135,9 @@ func Load() (*Config, error) {
 		DelegatorPort:     envIntOrDefault("DELEGATOR_PORT", 8403),
 		DelegatorEmbedded: envBoolOrDefault("DELEGATOR_EMBEDDED", false),
 		DelegatorURL:      os.Getenv("DELEGATOR_URL"),
+
+		// WhatsOnChain API URL override
+		WocApiURL: os.Getenv("WOC_API_URL"),
 
 		// Backward-compatible aliases
 		NoncePoolSize: poolSize,

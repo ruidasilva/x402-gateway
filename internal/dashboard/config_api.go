@@ -172,12 +172,12 @@ func (d *DashboardAPI) handleUpdateConfig() http.HandlerFunc {
 			if newMode != d.broadcaster.Mode() {
 				switch newMode {
 				case "woc":
-					d.broadcaster.Swap(broadcast.NewWoCBroadcaster(d.mainnet), "woc")
+					d.broadcaster.Swap(broadcast.NewWoCBroadcaster(d.wocBaseURL), "woc")
 					d.healthTracker = nil
 				case "composite":
 					ht := broadcast.NewHealthTracker()
 					primary := broadcast.NewGorillaPoolBroadcaster(d.cfg.ArcURL, d.cfg.ArcAPIKey)
-					fallback := broadcast.NewWoCBroadcaster(d.mainnet)
+					fallback := broadcast.NewWoCBroadcaster(d.wocBaseURL)
 					d.broadcaster.Swap(broadcast.NewCompositeBroadcaster(primary, fallback, ht), "composite")
 					d.healthTracker = ht
 				case "mock":

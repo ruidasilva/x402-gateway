@@ -99,6 +99,7 @@ type TreasuryWatcher struct {
 }
 
 // NewTreasuryWatcher creates a watcher for the given treasury address.
+// baseURL is the WoC-compatible API base URL (e.g. "https://api.whatsonchain.com/v1/bsv/main").
 // rdb may be nil (falls back to in-memory only).
 func NewTreasuryWatcher(
 	mainnet bool,
@@ -106,6 +107,7 @@ func NewTreasuryWatcher(
 	treasuryKey *ec.PrivateKey,
 	interval time.Duration,
 	rdb *redis.Client,
+	baseURL string,
 ) (*TreasuryWatcher, error) {
 	// Derive locking script hex from the treasury key
 	addr, err := script.NewAddressFromPublicKey(treasuryKey.PubKey(), mainnet)
@@ -118,11 +120,6 @@ func NewTreasuryWatcher(
 	}
 	scriptHex := fmt.Sprintf("%x", *lockScript)
 
-	network := "test"
-	if mainnet {
-		network = "main"
-	}
-
 	return &TreasuryWatcher{
 		utxos:      []FundingUTXO{},
 		mempool:    []FundingUTXO{},
@@ -130,7 +127,7 @@ func NewTreasuryWatcher(
 		leased:     make(map[string]TreasuryLease),
 		leaseTTL:   2 * time.Minute,
 		httpClient: &http.Client{Timeout: 15 * time.Second},
-		baseURL:    fmt.Sprintf("https://api.whatsonchain.com/v1/bsv/%s", network),
+		baseURL:    baseURL,
 		address:    address,
 		scriptHex:  scriptHex,
 		interval:   interval,

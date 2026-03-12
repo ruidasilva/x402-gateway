@@ -56,14 +56,10 @@ type wocUnspentItem struct {
 	Height int    `json:"height"`
 }
 
-// fetchWoCUnspentItems queries WhatsOnChain for all unspent UTXOs at the given
-// address and returns the raw items with full details.
-func fetchWoCUnspentItems(address string, mainnet bool) ([]wocUnspentItem, error) {
-	network := "main"
-	if !mainnet {
-		network = "test"
-	}
-	url := fmt.Sprintf("https://api.whatsonchain.com/v1/bsv/%s/address/%s/unspent", network, address)
+// fetchWoCUnspentItems queries a WoC-compatible API for all unspent UTXOs at
+// the given address and returns the raw items with full details.
+func fetchWoCUnspentItems(address string, baseURL string) ([]wocUnspentItem, error) {
+	url := baseURL + "/address/" + address + "/unspent"
 
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Get(url)
@@ -92,11 +88,11 @@ func fetchWoCUnspentItems(address string, mainnet bool) ([]wocUnspentItem, error
 	return items, nil
 }
 
-// fetchWoCUnspentSet queries WhatsOnChain for all unspent UTXOs at the given
-// address and returns a set of "txid:vout" strings. Used for zombie nonce
+// fetchWoCUnspentSet queries a WoC-compatible API for all unspent UTXOs at the
+// given address and returns a set of "txid:vout" strings. Used for zombie nonce
 // detection at startup.
-func fetchWoCUnspentSet(address string, mainnet bool) (map[string]bool, error) {
-	items, err := fetchWoCUnspentItems(address, mainnet)
+func fetchWoCUnspentSet(address string, baseURL string) (map[string]bool, error) {
+	items, err := fetchWoCUnspentItems(address, baseURL)
 	if err != nil {
 		return nil, err
 	}
@@ -155,18 +151,22 @@ func main() {
 	// Fee key is used by delegator and fee delegator
 	key := keys.FeeKey
 
+	// Compute WoC base URL once from config (configurable via WOC_API_URL env var)
+	wocBaseURL := cfg.WocBaseURL()
+	logger.Info("WoC API base URL", "url", wocBaseURL)
+
 	// Select broadcaster based on config (wrapped in Swappable for hot-swap via dashboard)
 	var inner transaction.Broadcaster
 	var healthTracker *broadcast.HealthTracker
 	demoMode := false
 	switch cfg.Broadcaster {
 	case "woc":
-		inner = broadcast.NewWoCBroadcaster(mainnet)
+		inner = broadcast.NewWoCBroadcaster(wocBaseURL)
 	case "composite":
 		// GorillaPool ARC primary + WoC fallback
 		healthTracker = broadcast.NewHealthTracker()
 		primary := broadcast.NewGorillaPoolBroadcaster(cfg.ArcURL, cfg.ArcAPIKey)
-		fallback := broadcast.NewWoCBroadcaster(mainnet)
+		fallback := broadcast.NewWoCBroadcaster(wocBaseURL)
 		inner = broadcast.NewCompositeBroadcaster(primary, fallback, healthTracker)
 		logger.Info("composite broadcaster configured",
 			"primary", "GorillaPool ARC",
@@ -407,7 +407,7 @@ func main() {
 			{"nonce", noncePool, keys.NonceAddress},
 			{"fee", feePool, keys.FeeAddress},
 		} {
-			onChain, err := fetchWoCUnspentSet(pv.address, mainnet)
+			onChain, err := fetchWoCUnspentSet(pv.address, wocBaseURL)
 			if err != nil {
 				logger.Warn("on-chain validation: skipped (WoC unavailable)",
 					"pool", pv.name, "error", err)
@@ -436,7 +436,7 @@ func main() {
 	// Uses Lookup() to avoid re-adding UTXOs the pool already knows about (any
 	// status: available, leased, or spent).
 	if !demoMode {
-		items, err := fetchWoCUnspentItems(keys.PaymentAddress, mainnet)
+		items, err := fetchWoCUnspentItems(keys.PaymentAddress, wocBaseURL)
 		if err != nil {
 			logger.Warn("payment pool hydration: skipped (WoC unavailable)", "error", err)
 		} else if len(items) > 0 {
@@ -476,6 +476,7 @@ func main() {
 			keys.TreasuryKey,
 			time.Duration(cfg.TreasuryPollInterval)*time.Second,
 			rdb, // nil if Redis not enabled
+			wocBaseURL,
 		)
 		if err != nil {
 			logger.Error("failed to create treasury watcher", "error", err)
@@ -545,6 +546,7 @@ func main() {
 		keys.TreasuryKey, mainnet, bcast,
 		startTime, payeeAddr,
 		watcher, healthTracker, revenueTracker,
+		wocBaseURL,
 	)
 
 	// Start pool lease reclaim loops

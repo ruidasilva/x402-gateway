@@ -55,12 +55,7 @@ func (d *DashboardAPI) handleReconcilePools() http.HandlerFunc {
 			return
 		}
 
-		// Build WoC base URL
-		network := "main"
-		if !d.mainnet {
-			network = "test"
-		}
-		baseURL := fmt.Sprintf("https://api.whatsonchain.com/v1/bsv/%s", network)
+		baseURL := d.wocBaseURL
 		client := &http.Client{Timeout: 15 * time.Second}
 
 		pools := []struct {

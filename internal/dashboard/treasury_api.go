@@ -498,7 +498,7 @@ func (d *DashboardAPI) handleSweepRevenue() http.HandlerFunc {
 				minSats = 10
 			}
 
-			wocUTXOs, err := fetchPayeeUnspent(d.payeeAddr, d.mainnet)
+			wocUTXOs, err := fetchPayeeUnspent(d.payeeAddr, d.wocBaseURL)
 			if err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]any{
 					"error": "no tracked settlement UTXOs to sweep (pre-upgrade settlements require WoC, which is currently unavailable)",
@@ -587,12 +587,8 @@ type wocUnspentItem struct {
 }
 
 // fetchPayeeUnspent queries WoC for unspent UTXOs at the given address.
-func fetchPayeeUnspent(address string, mainnet bool) ([]wocUnspentItem, error) {
-	network := "main"
-	if !mainnet {
-		network = "test"
-	}
-	url := fmt.Sprintf("https://api.whatsonchain.com/v1/bsv/%s/address/%s/unspent", network, address)
+func fetchPayeeUnspent(address string, baseURL string) ([]wocUnspentItem, error) {
+	url := baseURL + "/address/" + address + "/unspent"
 
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Get(url)

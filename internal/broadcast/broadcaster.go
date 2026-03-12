@@ -171,14 +171,11 @@ type WoCBroadcaster struct {
 	httpClient *http.Client
 }
 
-// NewWoCBroadcaster creates a WoC broadcaster for the given network.
-func NewWoCBroadcaster(mainnet bool) *WoCBroadcaster {
-	network := "test"
-	if mainnet {
-		network = "main"
-	}
+// NewWoCBroadcaster creates a WoC broadcaster using the given base URL
+// (e.g. "https://api.whatsonchain.com/v1/bsv/main").
+func NewWoCBroadcaster(baseURL string) *WoCBroadcaster {
 	return &WoCBroadcaster{
-		baseURL: fmt.Sprintf("https://api.whatsonchain.com/v1/bsv/%s", network),
+		baseURL: baseURL,
 		httpClient: &http.Client{
 			Timeout: 15 * time.Second,
 		},

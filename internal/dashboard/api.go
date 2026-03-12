@@ -39,6 +39,7 @@ type DashboardAPI struct {
 	watcher        *treasury.TreasuryWatcher  // may be nil if watcher not configured
 	healthTracker  *broadcast.HealthTracker   // may be nil if not using composite broadcaster
 	revenueTracker *RevenueTracker            // persistent settlement revenue
+	wocBaseURL     string                     // WoC-compatible API base URL for UTXO lookups
 }
 
 // NewDashboardAPI creates a new dashboard API instance.
@@ -54,6 +55,7 @@ func NewDashboardAPI(
 	watcher *treasury.TreasuryWatcher,
 	healthTracker *broadcast.HealthTracker,
 	revenueTracker *RevenueTracker,
+	wocBaseURL string,
 ) *DashboardAPI {
 	return &DashboardAPI{
 		cfg:            cfg,
@@ -70,6 +72,7 @@ func NewDashboardAPI(
 		watcher:        watcher,
 		healthTracker:  healthTracker,
 		revenueTracker: revenueTracker,
+		wocBaseURL:     wocBaseURL,
 	}
 }
 
