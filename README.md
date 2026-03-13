@@ -70,6 +70,22 @@ The **Gatekeeper** issues 402 challenges and verifies proofs. The **Delegator** 
 
 Full architecture details, settlement flow diagrams, and key concepts: [Architecture](docs/architecture.md)
 
+## Client Library
+
+The [`@merkleworks/x402-client`](client-js/) package provides a drop-in `fetch()` replacement that transparently handles 402 payment challenges. No wallet or balance tracking required.
+
+```typescript
+import { X402Client } from "@merkleworks/x402-client"
+
+const client = new X402Client({
+  delegatorUrl: "https://demo.x402.merkleworks.io",
+})
+
+const res = await client.fetch("https://demo.x402.merkleworks.io/v1/expensive")
+```
+
+See the [client README](client-js/README.md) for install, configuration, protocol profiles, error handling, and advanced usage.
+
 ## Documentation
 
 | Document | Description |
