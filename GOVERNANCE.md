@@ -6,12 +6,12 @@ The x402 protocol and this reference implementation are governed by a specificat
 
 ## Authority Hierarchy
 
-| Level | Authority | Repository |
-|-------|-----------|------------|
-| Tier 0 | Protocol invariants (frozen) | merkleworks-x402-spec |
-| Tier 1 | Wire protocol specification | merkleworks-x402-spec |
-| Tier 2 | Reference implementation architecture | merkleworks-x402-spec |
-| Code | Implementation | this repository |
+| Level | Authority |
+|-------|-----------|
+| Tier 0 | Frozen protocol invariants — foundational principles that do not change |
+| Tier 1 | Wire-level protocol: HTTP headers, challenge/proof format, status codes |
+| Tier 2 | Reference implementation architecture: component roles, signing rules, pool management |
+| Code | Implementation (this repository) |
 
 Higher tiers always prevail. If code behavior conflicts with the specification, the code is wrong.
 

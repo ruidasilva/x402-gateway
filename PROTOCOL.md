@@ -14,13 +14,17 @@ The normative protocol specification is maintained at:
 
 If any behavior in this implementation conflicts with the specification, the specification prevails.
 
-## Specification Documents
+## Specification Tiers
 
-| Document | Tier | Content |
-|----------|------|---------|
-| `north-star.md` | 0 (Frozen) | Protocol invariants and constitutional doctrine |
-| `protocol-spec.md` | 1 | Wire-level protocol: HTTP headers, challenge/proof format, status codes |
-| `reference-impl-spec.md` | 2 | Implementation architecture: component roles, signing rules, pool management |
+The protocol is governed by a tiered authority model:
+
+| Tier | Scope |
+|------|-------|
+| **0** | Frozen protocol invariants — foundational principles that do not change |
+| **1** | Wire-level protocol: HTTP headers, challenge/proof format, status codes |
+| **2** | Reference implementation architecture: component roles, signing rules, pool management |
+
+Higher tiers always prevail. See the [specification repository](https://github.com/ruidasilva/merkleworks-x402-spec) for details.
 
 ## Protocol Flow
 

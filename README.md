@@ -55,15 +55,15 @@ This implementation conforms to the **x402 Protocol Specification** maintained a
 
 **[merkleworks-x402-spec](https://github.com/ruidasilva/merkleworks-x402-spec)**
 
-The specification repository contains the normative documents that govern this codebase:
+The specification is governed by a tiered authority model:
 
-| Document | Authority |
-|----------|-----------|
-| `north-star.md` | Tier 0 — Frozen invariants and constitutional doctrine |
-| `protocol-spec.md` | Tier 1 — Wire-level protocol: HTTP headers, challenge/proof format, status codes |
-| `reference-impl-spec.md` | Tier 2 — Implementation architecture: component roles, signing rules, pool management |
+| Tier | Scope |
+|------|-------|
+| **0** | Frozen protocol invariants — foundational principles that do not change |
+| **1** | Wire-level protocol: HTTP headers, challenge/proof format, status codes |
+| **2** | Reference implementation architecture: component roles, signing rules, pool management |
 
-**Authority hierarchy**: Tier 0 → Tier 1 → Tier 2 → Code. Documents are normative. Code conforms to documents, never the reverse. When code contradicts a spec document, the code is wrong.
+**Authority hierarchy**: Tier 0 → Tier 1 → Tier 2 → Code. The specification is normative. Code conforms to the specification, never the reverse.
 
 ## Protocol Stewardship
 
