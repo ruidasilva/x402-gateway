@@ -243,7 +243,7 @@ export default function TestingTab() {
       updateTimeline('delegator', {
         status: 'success',
         timestamp: Date.now(),
-        details: `txid: ${txid}`,
+        details: `txid: ${txid.slice(0, 12)}...`,
         meta: { delegatorUrl, fee_inputs: String(delegatorInputs) },
       })
 
@@ -278,7 +278,7 @@ export default function TestingTab() {
           updateTimeline('broadcast', {
             status: 'success',
             timestamp: broadcastTime,
-            details: `txid: ${broadcastResult.txid}`,
+            details: `txid: ${broadcastResult.txid.slice(0, 12)}...`,
             meta: { mode: 'woc', txid: broadcastResult.txid },
           })
         } catch (err) {
@@ -654,15 +654,17 @@ Client (Dashboard)
                       {/* For steps with txid (delegator=2, broadcast=3), make the txid a clickable WoC link */}
                       {(i === 2 || i === 3) && settlementDetails.txid && !isDemo && config?.network ? (
                         <>
-                          {step.detail.replace(settlementDetails.txid, '').replace(/txid:\s*/, 'txid: ').replace(/Broadcast OK:\s*/, 'Broadcast OK: ')}
-                          <a
-                            href={wocTxUrl(config.network, settlementDetails.txid)}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            style={{ color: 'var(--accent-blue)', textDecoration: 'none' }}
-                          >
-                            {settlementDetails.txid} ↗
-                          </a>
+                          <div>{step.detail.replace(settlementDetails.txid, '').replace(/txid:\s*/, 'txid:').replace(/Broadcast OK:\s*/, 'Broadcast OK:')}</div>
+                          <div style={{ marginTop: 2 }}>
+                            <a
+                              href={wocTxUrl(config.network, settlementDetails.txid)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              style={{ color: 'var(--accent-blue)', textDecoration: 'none' }}
+                            >
+                              {settlementDetails.txid} ↗
+                            </a>
+                          </div>
                         </>
                       ) : step.detail}
                     </div>

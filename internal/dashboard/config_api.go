@@ -66,16 +66,12 @@ func (d *DashboardAPI) handleGetConfig() http.HandlerFunc {
 			profile = "B (Gateway Template)"
 		}
 
-		// Determine delegator URL for the dashboard
+		// Determine delegator URL for the dashboard.
+		// When embedded, use "" so the browser fetches from the same origin.
 		delegatorURL := d.cfg.DelegatorURL
-		if delegatorURL == "" {
-			if d.cfg.DelegatorEmbedded {
-				// Embedded: same host as gateway
-				delegatorURL = fmt.Sprintf("http://localhost:%d", d.cfg.Port)
-			} else {
-				// External: default delegator port
-				delegatorURL = fmt.Sprintf("http://localhost:%d", d.cfg.DelegatorPort)
-			}
+		if delegatorURL == "" && !d.cfg.DelegatorEmbedded {
+			// External: default delegator port
+			delegatorURL = fmt.Sprintf("http://localhost:%d", d.cfg.DelegatorPort)
 		}
 
 		resp := ConfigResponse{

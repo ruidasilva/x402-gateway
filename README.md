@@ -338,31 +338,25 @@ Contains:
 
 ## Docker Deployment
 
-### With Local go-sdk Dependency
-
-The Dockerfile is configured to include the local `go-sdk` from the parent directory:
-
 ```bash
-# From x402-gateway directory
+# Start gateway with Redis
 docker compose up -d --build
 ```
 
 The `docker-compose.yml` sets:
-- Build context to parent directory
 - Redis for pool indexing (operational store)
 - Environment variables from `.env`
 
 ### Manual Docker Build
 
 ```bash
-# From parent directory (where go-sdk and x402-gateway both exist)
-docker build -f x402-gateway/Dockerfile -t x402-gateway .
+docker build -t x402-gateway .
 ```
 
 ## Development
 
 ### Prerequisites
-- Go 1.21+
+- Go 1.25+
 - Node.js 20+ (for dashboard)
 - Docker & Docker Compose (optional)
 - Redis (optional, for persistent pool indexing)

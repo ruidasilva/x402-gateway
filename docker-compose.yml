@@ -14,8 +14,8 @@ services:
 
   x402-gateway:
     build:
-      context: ..
-      dockerfile: x402-gateway/Dockerfile
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "${PORT:-8402}:${PORT:-8402}"
     depends_on:
@@ -31,8 +31,8 @@ services:
 
   x402-delegator:
     build:
-      context: ..
-      dockerfile: x402-gateway/Dockerfile.delegator
+      context: .
+      dockerfile: Dockerfile.delegator
     ports:
       - "${DELEGATOR_PORT:-8403}:${DELEGATOR_PORT:-8403}"
     depends_on:

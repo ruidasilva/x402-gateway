@@ -5,32 +5,22 @@
 # You may obtain a copy of the License at
 #
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 
 # =============================================================================
 # x402 Delegator — Minimal Docker Build
 # =============================================================================
 # No React dashboard, no node.js stage — just the Go delegator binary.
-# Build context must be the PARENT directory (where go-sdk and x402-gateway
-# both live). docker-compose.yml handles this automatically.
 #
 #   docker compose up -d --build
 # =============================================================================
 
-FROM golang:1.24-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
-# Copy the local go-sdk dependency
-COPY go-sdk/ /go-sdk/
-
-# Copy gateway source (delegator lives in the same module)
 WORKDIR /app
-COPY x402-gateway/ ./
-
-# Rewrite the replace directive: ../go-sdk → /go-sdk (inside container)
-RUN sed -i 's|=> ../go-sdk|=> /go-sdk|' go.mod
-
-# Download Go dependencies
+COPY go.mod go.sum ./
 RUN go mod download
+
+COPY . .
 
 # Build delegator binary only
 RUN CGO_ENABLED=0 go build -o /bin/x402-delegator ./cmd/delegator

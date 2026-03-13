@@ -5,14 +5,10 @@
 # You may obtain a copy of the License at
 #
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 
 # =============================================================================
 # x402 Gateway — Multi-stage Docker Build
 # =============================================================================
-# Build context must be the PARENT directory (where go-sdk and x402-gateway
-# both live). docker-compose.yml handles this automatically.
-#
 #   docker compose up -d --build
 # =============================================================================
 
@@ -20,31 +16,23 @@
 FROM node:20-alpine AS dashboard
 
 WORKDIR /dashboard
-COPY x402-gateway/dashboard/package*.json ./
+COPY dashboard/package*.json ./
 RUN npm ci
-COPY x402-gateway/dashboard/ .
+COPY dashboard/ .
 RUN npm run build
 # Vite outputs to: ../cmd/server/static/ (relative to /dashboard)
 # Which resolves to: /cmd/server/static/
 
 # Stage 2: Build Go binaries
-FROM golang:1.24-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
-# Copy the local go-sdk dependency
-COPY go-sdk/ /go-sdk/
-
-# Copy gateway source
 WORKDIR /app
-COPY x402-gateway/ ./
-
-# Rewrite the replace directive: ../go-sdk → /go-sdk (inside container)
-RUN sed -i 's|=> ../go-sdk|=> /go-sdk|' go.mod
-
-# Download Go dependencies
+COPY go.mod go.sum ./
 RUN go mod download
 
+COPY . .
+
 # Copy the React build output into the Go embed directory
-# (this overwrites the empty/stale static dir from the source copy)
 COPY --from=dashboard /cmd/server/static/ ./cmd/server/static/
 
 # Build all binaries
