@@ -23,8 +23,8 @@ import (
 
 	"github.com/bsv-blockchain/go-sdk/transaction"
 
-	"github.com/merkle-works/x402-gateway/internal/challenge"
-	"github.com/merkle-works/x402-gateway/internal/pool"
+	"github.com/merkleworks/x402-bsv/internal/challenge"
+	"github.com/merkleworks/x402-bsv/internal/pool"
 )
 
 const (

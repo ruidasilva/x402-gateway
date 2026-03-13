@@ -17,7 +17,7 @@ import (
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 
-	"github.com/merkle-works/x402-gateway/internal/pool"
+	"github.com/merkleworks/x402-bsv/internal/pool"
 )
 
 // RefillConfig configures the auto-refill loop for a single pool.

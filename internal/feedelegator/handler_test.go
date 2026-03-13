@@ -25,7 +25,7 @@ import (
 	"github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 
-	"github.com/merkle-works/x402-gateway/internal/pool"
+	"github.com/merkleworks/x402-bsv/internal/pool"
 )
 
 // newTestHandler creates a fee delegator handler with an in-memory pool seeded with UTXOs.

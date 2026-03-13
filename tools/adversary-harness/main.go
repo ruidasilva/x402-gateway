@@ -36,9 +36,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/merkle-works/x402-gateway/tools/adversary-harness/client"
-	"github.com/merkle-works/x402-gateway/tools/adversary-harness/metrics"
-	"github.com/merkle-works/x402-gateway/tools/adversary-harness/scenarios"
+	"github.com/merkleworks/x402-bsv/tools/adversary-harness/client"
+	"github.com/merkleworks/x402-bsv/tools/adversary-harness/metrics"
+	"github.com/merkleworks/x402-bsv/tools/adversary-harness/scenarios"
 )
 
 // timedScenarios are the original stress-test scenarios whose runtime

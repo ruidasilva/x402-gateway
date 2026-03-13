@@ -14,7 +14,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/merkle-works/x402-gateway/internal/hdwallet"
+	"github.com/merkleworks/x402-bsv/internal/hdwallet"
 )
 
 func main() {

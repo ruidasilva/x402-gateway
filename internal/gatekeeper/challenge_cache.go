@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/merkle-works/x402-gateway/internal/challenge"
+	"github.com/merkleworks/x402-bsv/internal/challenge"
 )
 
 // ChallengeCache stores issued challenges keyed by their SHA-256 hash.

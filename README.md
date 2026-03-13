@@ -1,5 +1,7 @@
 # x402 Settlement Gateway
 
+[![CI](https://github.com/merkleworks/x402-bsv/actions/workflows/ci.yml/badge.svg)](https://github.com/merkleworks/x402-bsv/actions/workflows/ci.yml)
+
 ## Protocol Status
 
 | | |

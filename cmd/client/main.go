@@ -29,8 +29,8 @@ import (
 	sighash "github.com/bsv-blockchain/go-sdk/transaction/sighash"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 
-	"github.com/merkle-works/x402-gateway/internal/challenge"
-	"github.com/merkle-works/x402-gateway/internal/gatekeeper"
+	"github.com/merkleworks/x402-bsv/internal/challenge"
+	"github.com/merkleworks/x402-bsv/internal/gatekeeper"
 )
 
 // x402ClientSigHash is SIGHASH_ALL | ANYONECANPAY | FORKID = 0xC1.

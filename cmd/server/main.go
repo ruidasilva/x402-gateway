@@ -28,17 +28,17 @@ import (
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 	"github.com/redis/go-redis/v9"
 
-	"github.com/merkle-works/x402-gateway/internal/broadcast"
-	"github.com/merkle-works/x402-gateway/internal/config"
-	"github.com/merkle-works/x402-gateway/internal/dashboard"
-	"github.com/merkle-works/x402-gateway/internal/delegator"
-	"github.com/merkle-works/x402-gateway/internal/feedelegator"
-	"github.com/merkle-works/x402-gateway/internal/gatekeeper"
-	"github.com/merkle-works/x402-gateway/internal/hdwallet"
-	"github.com/merkle-works/x402-gateway/internal/pool"
-	"github.com/merkle-works/x402-gateway/internal/pricing"
-	"github.com/merkle-works/x402-gateway/internal/replay"
-	"github.com/merkle-works/x402-gateway/internal/treasury"
+	"github.com/merkleworks/x402-bsv/internal/broadcast"
+	"github.com/merkleworks/x402-bsv/internal/config"
+	"github.com/merkleworks/x402-bsv/internal/dashboard"
+	"github.com/merkleworks/x402-bsv/internal/delegator"
+	"github.com/merkleworks/x402-bsv/internal/feedelegator"
+	"github.com/merkleworks/x402-bsv/internal/gatekeeper"
+	"github.com/merkleworks/x402-bsv/internal/hdwallet"
+	"github.com/merkleworks/x402-bsv/internal/pool"
+	"github.com/merkleworks/x402-bsv/internal/pricing"
+	"github.com/merkleworks/x402-bsv/internal/replay"
+	"github.com/merkleworks/x402-bsv/internal/treasury"
 )
 
 // writeJSON encodes a value as JSON and writes it to the response.

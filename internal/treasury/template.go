@@ -20,7 +20,7 @@ import (
 	sighash "github.com/bsv-blockchain/go-sdk/transaction/sighash"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 
-	"github.com/merkle-works/x402-gateway/internal/pool"
+	"github.com/merkleworks/x402-bsv/internal/pool"
 )
 
 // TemplateSigHash is SIGHASH_SINGLE | ANYONECANPAY | FORKID = 0xC3.

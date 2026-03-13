@@ -17,7 +17,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/merkle-works/x402-gateway/internal/pool"
+	"github.com/merkleworks/x402-bsv/internal/pool"
 )
 
 // wocUnspent matches the WoC /address/{address}/unspent response item.

@@ -14,7 +14,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/merkle-works/x402-gateway/internal/broadcast"
+	"github.com/merkleworks/x402-bsv/internal/broadcast"
 )
 
 // ConfigResponse is the safe configuration response (no secret keys).

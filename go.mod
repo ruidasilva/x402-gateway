@@ -1,4 +1,4 @@
-module github.com/merkle-works/x402-gateway
+module github.com/merkleworks/x402-bsv
 
 go 1.25.0
 

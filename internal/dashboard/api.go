@@ -16,11 +16,11 @@ import (
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 
-	"github.com/merkle-works/x402-gateway/internal/broadcast"
-	"github.com/merkle-works/x402-gateway/internal/config"
-	"github.com/merkle-works/x402-gateway/internal/hdwallet"
-	"github.com/merkle-works/x402-gateway/internal/pool"
-	"github.com/merkle-works/x402-gateway/internal/treasury"
+	"github.com/merkleworks/x402-bsv/internal/broadcast"
+	"github.com/merkleworks/x402-bsv/internal/config"
+	"github.com/merkleworks/x402-bsv/internal/hdwallet"
+	"github.com/merkleworks/x402-bsv/internal/pool"
+	"github.com/merkleworks/x402-bsv/internal/treasury"
 )
 
 // DashboardAPI provides HTTP handlers for the React dashboard.

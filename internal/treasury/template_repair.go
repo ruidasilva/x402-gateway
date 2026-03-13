@@ -15,7 +15,7 @@ import (
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 
-	"github.com/merkle-works/x402-gateway/internal/pool"
+	"github.com/merkleworks/x402-bsv/internal/pool"
 )
 
 // TemplateRepairConfig configures the background template repair loop.

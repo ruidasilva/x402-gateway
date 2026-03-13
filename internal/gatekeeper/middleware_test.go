@@ -1,3 +1,11 @@
+// Copyright 2026 Merkle Works
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+
 package gatekeeper
 
 import (
@@ -14,9 +22,9 @@ import (
 	"github.com/bsv-blockchain/go-sdk/script"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 
-	"github.com/merkle-works/x402-gateway/internal/challenge"
-	"github.com/merkle-works/x402-gateway/internal/pricing"
-	"github.com/merkle-works/x402-gateway/internal/replay"
+	"github.com/merkleworks/x402-bsv/internal/challenge"
+	"github.com/merkleworks/x402-bsv/internal/pricing"
+	"github.com/merkleworks/x402-bsv/internal/replay"
 )
 
 const (

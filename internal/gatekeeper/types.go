@@ -14,10 +14,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/merkle-works/x402-gateway/internal/broadcast"
-	"github.com/merkle-works/x402-gateway/internal/pool"
-	"github.com/merkle-works/x402-gateway/internal/pricing"
-	"github.com/merkle-works/x402-gateway/internal/replay"
+	"github.com/merkleworks/x402-bsv/internal/broadcast"
+	"github.com/merkleworks/x402-bsv/internal/pool"
+	"github.com/merkleworks/x402-bsv/internal/pricing"
+	"github.com/merkleworks/x402-bsv/internal/replay"
 )
 
 // Config configures the gatekeeper middleware.

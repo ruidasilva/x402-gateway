@@ -22,8 +22,8 @@ import (
 	"github.com/bsv-blockchain/go-sdk/script"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 
-	"github.com/merkle-works/x402-gateway/internal/pool"
-	"github.com/merkle-works/x402-gateway/internal/treasury"
+	"github.com/merkleworks/x402-bsv/internal/pool"
+	"github.com/merkleworks/x402-bsv/internal/treasury"
 )
 
 // TreasuryInfoResponse provides treasury address and derivation details.
