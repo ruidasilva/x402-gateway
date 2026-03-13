@@ -103,6 +103,7 @@ See the [client README](client-js/README.md) for install, configuration, protoco
 |----------|-------------|
 | [Protocol](PROTOCOL.md) | Specification hierarchy and protocol overview |
 | [Governance](GOVERNANCE.md) | Authority model and contribution policy |
+| [Code of Conduct](CODE_OF_CONDUCT.md) | Contributor Covenant v2.1 |
 | [Contributing](CONTRIBUTING.md) | Development setup and PR process |
 | [Security](SECURITY.md) | Vulnerability reporting policy |
 | [Changelog](CHANGELOG.md) | Release history |
