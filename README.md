@@ -109,6 +109,16 @@ go run ./cmd/client http://localhost:8402/v1/expensive
 ### 4. Open Dashboard
 Visit: http://localhost:8402/
 
+### Common Issues During Setup
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `bind: address already in use` | Port 8402 is occupied | Set `PORT=8403` in `.env` or stop the conflicting process |
+| `REDIS_URL: connection refused` | Redis not running | Start Redis (`docker compose up redis -d`) or set `REDIS_ENABLED=false` |
+| `No UTXOs available` on first request | Pools not yet seeded | Use `make demo` (auto-seeds) or POST to `/api/v1/treasury/fanout` |
+| `broadcaster: dial tcp: lookup ...` | No network access with `woc` or `composite` | Use `BROADCASTER=mock` for offline development |
+| `go: module requires go >= 1.25.0` | Go version too old | Install Go 1.25+ from https://go.dev/dl/ |
+
 ## Architecture
 
 ```
@@ -237,41 +247,296 @@ POOL_REPLENISH_THRESHOLD=500
 POOL_OPTIMAL_SIZE=5000
 ```
 
-## API Endpoints
+## API Reference
 
-### Protected Endpoints (402 Gated)
+### Endpoint Summary
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/v1/expensive` | GET | Example protected resource (100 sats) |
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/v1/expensive` | Example protected endpoint (402-gated) |
+| GET | `/health` | Server health and pool statistics |
+| POST | `/delegate/x402` | Fee delegation (binary TX) |
+| POST | `/api/v1/tx` | Fee delegation (JSON TX) |
+| GET | `/api/v1/config` | Get server configuration |
+| PUT | `/api/v1/config` | Update server configuration |
+| GET | `/api/v1/stats/summary` | Aggregate statistics |
+| GET | `/api/v1/stats/timeseries` | Time-series data |
+| GET | `/api/v1/revenue` | Revenue statistics |
+| GET | `/api/v1/treasury/info` | Treasury and pool info |
+| GET | `/api/v1/treasury/utxos` | Treasury UTXOs |
+| POST | `/api/v1/treasury/fanout` | Fan-out UTXOs to a pool |
+| POST | `/api/v1/treasury/sweep` | Sweep UTXOs to treasury |
+| POST | `/api/v1/treasury/sweep-revenue` | Sweep settlement revenue |
+| POST | `/api/v1/broadcast` | Broadcast a raw transaction |
+| GET | `/api/v1/health/broadcasters` | Broadcaster health (composite mode) |
+| POST | `/api/v1/pools/reconcile` | Detect and remove zombie UTXOs |
+| GET | `/api/v1/events/stream` | SSE event stream |
 
-### Settlement Flow Endpoints
+### X402 Protocol Headers
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/nonce/lease` | GET | Allocate a nonce UTXO for challenge construction |
-| `/delegate/x402` | POST | Fee delegation — add fee inputs to client partial TX |
-| `/health` | GET | Server health and pool statistics |
+| Header | Direction | Description |
+|--------|-----------|-------------|
+| `X402-Challenge` | Response (402) | Base64url-encoded Challenge JSON |
+| `X402-Accept` | Response (402) | Payment scheme: `bsv-tx-v1` |
+| `X402-Proof` | Request (retry) | Client payment proof JSON |
+| `X402-Receipt` | Response (200) | Payment receipt hash |
+| `X402-Receipt-Time` | Response (200) | ISO 8601 timestamp |
+| `X402-Status` | Response | `accepted`, `pending`, `rejected`, or `error` |
 
-### Fee Delegator API (Node.js Compatible)
+### 402 Challenge–Proof Flow
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/v1/tx` | POST | Fee delegation with JSON TX |
-| `/api/utxo/stats` | GET | Pool statistics |
-| `/api/utxo/health` | GET | Pool health status |
-| `/api/health` | GET | API uptime |
+**Step 1 — Client sends request without proof:**
 
-### Dashboard API
+```
+GET /v1/expensive HTTP/1.1
+```
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/v1/config` | GET/PUT | Server configuration |
-| `/api/v1/stats/summary` | GET | Aggregate statistics |
-| `/api/v1/stats/timeseries` | GET | Time-series data |
-| `/api/v1/treasury/info` | GET | Treasury status |
-| `/api/v1/treasury/fanout` | POST | Create UTXOs from funding TX |
-| `/api/v1/events/stream` | GET | SSE event stream |
+**Step 2 — Gateway responds 402 with challenge:**
+
+```http
+HTTP/1.1 402 Payment Required
+X402-Challenge: <base64url-encoded JSON>
+X402-Accept: bsv-tx-v1
+
+{"status":402,"code":"payment_required","message":"Payment required. See X402-Challenge header."}
+```
+
+The decoded `X402-Challenge` contains:
+
+```json
+{
+  "v": "1",
+  "scheme": "bsv-tx-v1",
+  "amount_sats": 100,
+  "payee_locking_script_hex": "76a914...88ac",
+  "expires_at": 1710360000,
+  "domain": "localhost:8402",
+  "method": "GET",
+  "path": "/v1/expensive",
+  "query": "",
+  "req_headers_sha256": "e3b0c442...",
+  "req_body_sha256": "e3b0c442...",
+  "nonce_utxo": {
+    "txid": "abcd1234...",
+    "vout": 0,
+    "satoshis": 1,
+    "locking_script_hex": "76a914...88ac"
+  },
+  "template": null,
+  "require_mempool_accept": true,
+  "confirmations_required": 0
+}
+```
+
+**Step 3 — Client builds TX, delegates fees, broadcasts, then retries with proof:**
+
+```http
+GET /v1/expensive HTTP/1.1
+X402-Proof: {"v":"1","scheme":"bsv-tx-v1","txid":"...","rawtx_b64":"...","challenge_sha256":"...","request":{...}}
+```
+
+**Step 4 — Gateway verifies and responds:**
+
+```http
+HTTP/1.1 200 OK
+X402-Receipt: <hex-hash>
+X402-Receipt-Time: 2026-03-13T10:00:00Z
+X402-Status: accepted
+```
+
+**Error status codes from proof verification:**
+
+| Status | Code | Meaning |
+|--------|------|---------|
+| 400 | `invalid_proof` | Malformed proof or missing fields |
+| 400 | `challenge_not_found` | Challenge hash not in cache |
+| 402 | `expired_challenge` | Challenge TTL exceeded |
+| 402 | `insufficient_amount` | Payment below required amount |
+| 403 | `invalid_binding` | Request fields don't match challenge |
+| 403 | `invalid_payee` | Payment output doesn't match payee |
+| 409 | `double_spend` | Nonce UTXO already spent |
+| 503 | `no_utxos_available` | Nonce pool exhausted |
+
+### POST /api/v1/tx — Fee Delegation
+
+Request:
+```json
+{
+  "txJson": {
+    "inputs": [
+      {"txid": "abcd...", "vout": 0, "satoshis": 1, "scriptSig": ""}
+    ],
+    "outputs": [
+      {"satoshis": 100, "script": "76a914...88ac"}
+    ]
+  }
+}
+```
+
+Success response (200):
+```json
+{
+  "success": true,
+  "txid": "abcd...",
+  "rawtx": "0100000001...",
+  "fee": 1,
+  "mode": "raw_transaction_returned"
+}
+```
+
+Error response (400/503):
+```json
+{"success": false, "error": "description"}
+```
+
+### GET /api/v1/config
+
+Response:
+```json
+{
+  "network": "testnet",
+  "port": 8402,
+  "broadcaster": "composite",
+  "feeRate": 0.5,
+  "poolReplenishThreshold": 500,
+  "poolOptimalSize": 5000,
+  "redisEnabled": true,
+  "poolSize": 100,
+  "leaseTTLSeconds": 300,
+  "payeeAddress": "1A1z...",
+  "keyMode": "xpriv",
+  "nonceAddress": "1Nonce...",
+  "feeAddress": "1Fee...",
+  "paymentAddress": "1Pay...",
+  "treasuryAddress": "1Treas...",
+  "templateMode": false,
+  "templatePriceSats": 10,
+  "feeUTXOSats": 1,
+  "profile": "A (Open Nonce)",
+  "delegatorUrl": "http://localhost:8403",
+  "delegatorEmbedded": true,
+  "broadcasterUrl": "https://api.whatsonchain.com",
+  "mode": "live",
+  "arcUrl": "https://arc.gorillapool.io"
+}
+```
+
+### PUT /api/v1/config
+
+Request (all fields optional):
+```json
+{
+  "feeRate": 1.0,
+  "poolReplenishThreshold": 200,
+  "poolOptimalSize": 2000,
+  "broadcaster": "composite"
+}
+```
+
+Response:
+```json
+{
+  "success": true,
+  "updated": {"feeRate": 1.0, "broadcaster": "composite"},
+  "restart_required": true,
+  "restart_reason": "Pool storage differs between demo and live mode."
+}
+```
+
+### GET /api/v1/stats/summary
+
+```json
+{
+  "totalRequests": 150,
+  "payments": 50,
+  "challenges": 40,
+  "errors": 5,
+  "avgDurationMs": 45.5,
+  "totalFeeSats": 5000,
+  "uptimeSeconds": 86400.0,
+  "noncePool": {"available": 100, "total": 1000, "spent": 900},
+  "feePool": {"available": 500, "total": 1000, "spent": 500},
+  "paymentPool": {"available": 200, "total": 500, "spent": 300}
+}
+```
+
+### GET /api/v1/revenue
+
+```json
+{
+  "payments": 150,
+  "totalSats": 15000,
+  "lastTxid": "abcd...",
+  "unsweptCount": 5,
+  "unsweptSats": 500
+}
+```
+
+### POST /api/v1/treasury/fanout
+
+Request:
+```json
+{
+  "pool": "nonce",
+  "count": 100,
+  "fundingTxid": "abcd...",
+  "fundingVout": 0,
+  "fundingScript": "76a914...88ac",
+  "fundingSatoshis": 500000,
+  "signingKey": "treasury"
+}
+```
+
+Response:
+```json
+{"success": true, "txid": "abcd...", "utxoCount": 100, "pool": "nonce"}
+```
+
+### POST /api/v1/treasury/sweep
+
+Request:
+```json
+{
+  "signingKey": "treasury",
+  "inputs": [
+    {"txid": "abcd...", "vout": 0, "script": "76a914...88ac", "satoshis": 100000}
+  ]
+}
+```
+
+Response:
+```json
+{"success": true, "txid": "abcd...", "inputSats": 100000, "outputSats": 99990, "fee": 10}
+```
+
+### POST /api/v1/pools/reconcile
+
+Request: empty POST body.
+
+Response:
+```json
+{
+  "success": true,
+  "pools": [
+    {"pool": "nonce", "address": "1A...", "checked": 50, "valid": 45, "marked_spent": 5, "error": null},
+    {"pool": "fee", "address": "1B...", "checked": 200, "valid": 195, "marked_spent": 5, "error": null}
+  ],
+  "total_zombies": 10
+}
+```
+
+### GET /health
+
+```json
+{
+  "status": "ok",
+  "version": "1.0.0",
+  "network": "testnet",
+  "profile": "A (Open Nonce)",
+  "nonce_pool": {"available": 100, "total": 1000, "spent": 900},
+  "fee_pool": {"available": 500, "total": 1000, "spent": 500}
+}
+```
 
 ## Project Structure
 
@@ -336,22 +601,52 @@ Contains:
 ### Sighash 0xC1
 `SIGHASH_ALL | ANYONECANPAY | FORKID` — the client signs all outputs but only its own input. The delegator can then append fee inputs without breaking the client's signature. The delegator signs its fee inputs the same way.
 
-## Docker Deployment
+## Deployment
+
+### Demo Mode (Local Development)
 
 ```bash
-# Start gateway with Redis
+make demo
+```
+
+Starts with in-memory pools, mock broadcaster, and auto-seeded UTXOs. No external dependencies required.
+
+### Docker Compose (Recommended)
+
+```bash
+# Generate keys and .env
+make setup
+
+# Start gateway + delegator + Redis
 docker compose up -d --build
 ```
 
-The `docker-compose.yml` sets:
-- Redis for pool indexing (operational store)
-- Environment variables from `.env`
+The `docker-compose.yml` starts three services:
+- **Redis** — operational store for UTXO pool indexing (port 6379)
+- **x402-gateway** — main server with 402 middleware and dashboard (port 8402)
+- **x402-delegator** — fee delegation service (port 8403)
+
+Environment variables are loaded from `.env`. Redis is configured with health checks and the gateway waits for Redis readiness before starting.
 
 ### Manual Docker Build
 
 ```bash
 docker build -t x402-gateway .
+docker build -f Dockerfile.delegator -t x402-delegator .
 ```
+
+### Production Checklist
+
+| Item | Detail |
+|------|--------|
+| **Key generation** | Run `make setup` or `go run ./cmd/keygen` to generate an HD wallet (xpriv). Store securely. |
+| **Network** | Set `BSV_NETWORK=mainnet` and `BROADCASTER=composite` (GorillaPool ARC + WhatsOnChain fallback) |
+| **Redis** | Set `REDIS_ENABLED=true`. Required for pool persistence across restarts. |
+| **Pool seeding** | Fund the treasury address, then POST to `/api/v1/treasury/fanout` for nonce and fee pools |
+| **Fee budget** | Set `DAILY_FEE_BUDGET` to limit runaway fee spending under load |
+| **TLS** | Terminate TLS at a reverse proxy (nginx, Caddy, ALB). The gateway serves plain HTTP. |
+| **Monitoring** | Dashboard at `/`, SSE event stream at `/api/v1/events/stream`, health at `/health` |
+| **Backups** | Back up `.env` (contains xpriv). Redis data is operational — pools can be re-seeded from treasury. |
 
 ## Development
 
@@ -432,16 +727,34 @@ make dashboard-build
 ### "No UTXOs available (pool exhausted)"
 - UTXO pools need seeding with 1-satoshi UTXOs
 - In demo mode with mock broadcaster, pools auto-seed on startup
-- For production, use Treasury fan-out or fund manually
+- For production: fund the treasury address, then POST to `/api/v1/treasury/fanout`
+- Use `/api/v1/pools/reconcile` to detect and remove zombie UTXOs that are spent on-chain but still listed as available
 
 ### "SSE not supported" / Dashboard disconnected
 - The logging middleware must implement `http.Flusher`
-- Fixed in recent versions
+- Fixed in recent versions — update to the latest code
 
 ### Redis connection failed
-- Ensure Redis is running
+- Ensure Redis is running: `docker compose up redis -d`
 - Check `REDIS_URL` format: `redis://host:port`
-- Verify network connectivity in Docker
+- In Docker: the gateway uses `redis://redis:6379` (Docker DNS). Ensure both services are on the same Docker network
+- For local development without Redis: set `REDIS_ENABLED=false` (pools use in-memory storage, no persistence across restarts)
+
+### Broadcaster errors / "dial tcp: lookup ... no such host"
+- The `woc` and `composite` broadcasters require internet access
+- For offline development: set `BROADCASTER=mock`
+- For `composite` mode: GorillaPool ARC is primary, WhatsOnChain is fallback. If ARC is down, the circuit breaker opens automatically and routes through WoC
+- Check broadcaster health: GET `/api/v1/health/broadcasters`
+
+### Port conflicts
+- Default ports: 8402 (gateway), 8403 (delegator), 6379 (Redis)
+- Override in `.env`: set `PORT` and `DELEGATOR_PORT`
+- Docker Compose maps these automatically from `.env`
+
+### Transaction rejected by mempool
+- `409 double_spend`: the nonce UTXO was already spent — likely a retry of an already-settled request
+- `402 expired_challenge`: the challenge TTL (default 5 min) has passed — request a new challenge
+- `402 insufficient_amount`: the payment output is less than the challenged amount
 
 ## License
 
