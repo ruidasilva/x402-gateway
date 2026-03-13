@@ -45,8 +45,9 @@ cmd/server/static/
 # Deployment artifacts (infrastructure-specific)
 deploy/
 
-# Client JS (separate package)
-client-js/
+# Client JS build artifacts
+client-js/node_modules/
+client-js/dist/
 
 # Compiled binaries (root)
 delegator
