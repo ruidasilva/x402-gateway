@@ -28,6 +28,10 @@ jobs:
         with:
           go-version: "1.25"
 
+      # cmd/server embeds static/*; CI has no dashboard build here, so add a placeholder
+      - name: Placeholder for embed
+        run: mkdir -p cmd/server/static && echo '<!DOCTYPE html><html><head><title>x402</title></head><body></body></html>' > cmd/server/static/index.html
+
       - name: Vet
         run: go vet ./...
 
