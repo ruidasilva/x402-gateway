@@ -12,6 +12,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -20,9 +21,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv-blockchain/go-sdk/script"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
@@ -101,6 +105,239 @@ func fetchWoCUnspentSet(address string, baseURL string) (map[string]bool, error)
 		set[fmt.Sprintf("%s:%d", item.TxHash, item.TxPos)] = true
 	}
 	return set, nil
+}
+
+// --- Event bus and SSE (for dashboard) ---
+
+// EventType classifies gateway events for the SSE stream.
+type EventType string
+
+const (
+	EventChallengeIssued EventType = "challenge_issued"
+	EventPaymentAccepted EventType = "payment_accepted"
+	EventPaymentRejected EventType = "payment_rejected"
+	EventHTTPRequest     EventType = "http_request"
+)
+
+// Event represents a single gateway event sent to dashboard subscribers.
+type Event struct {
+	Type       EventType         `json:"-"`
+	Path       string            `json:"path"`
+	Method     string            `json:"method"`
+	Status     int               `json:"status"`
+	DurationMS int64             `json:"duration_ms"`
+	Timestamp  time.Time         `json:"timestamp"`
+	Details    map[string]string `json:"details,omitempty"`
+}
+
+// EventBus broadcasts events to all SSE subscribers.
+type EventBus struct {
+	mu          sync.RWMutex
+	subscribers map[chan Event]struct{}
+}
+
+// NewEventBus creates a new event bus.
+func NewEventBus() *EventBus {
+	return &EventBus{
+		subscribers: make(map[chan Event]struct{}),
+	}
+}
+
+// Subscribe registers a new SSE client and returns its channel.
+func (eb *EventBus) Subscribe() chan Event {
+	ch := make(chan Event, 32)
+	eb.mu.Lock()
+	eb.subscribers[ch] = struct{}{}
+	eb.mu.Unlock()
+	return ch
+}
+
+// Unsubscribe removes a client's channel and closes it.
+func (eb *EventBus) Unsubscribe(ch chan Event) {
+	eb.mu.Lock()
+	delete(eb.subscribers, ch)
+	eb.mu.Unlock()
+	close(ch)
+}
+
+// Emit broadcasts an event to all subscribers. Non-blocking — drops events for slow clients.
+func (eb *EventBus) Emit(e Event) {
+	eb.mu.RLock()
+	defer eb.mu.RUnlock()
+	for ch := range eb.subscribers {
+		select {
+		case ch <- e:
+		default:
+		}
+	}
+}
+
+// handleEvents returns an HTTP handler for the SSE /demo/events and /api/v1/events/stream endpoints.
+func handleEvents(eventBus *EventBus) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "SSE not supported", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		ch := eventBus.Subscribe()
+		defer eventBus.Unsubscribe(ch)
+		fmt.Fprintf(w, "event: connected\ndata: {\"status\":\"connected\"}\n\n")
+		flusher.Flush()
+		ctx := r.Context()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case event, ok := <-ch:
+				if !ok {
+					return
+				}
+				data, _ := json.Marshal(event)
+				fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.Type, data)
+				flusher.Flush()
+			}
+		}
+	}
+}
+
+func eventTypeFromStatus(status int, path string) EventType {
+	switch {
+	case status == 402:
+		return EventChallengeIssued
+	case status == 200 && strings.HasPrefix(path, "/v1/"):
+		return EventPaymentAccepted
+	case status >= 400 && strings.HasPrefix(path, "/v1/"):
+		return EventPaymentRejected
+	default:
+		return EventHTTPRequest
+	}
+}
+
+func eventDetailsFromHeaders(rw *responseWriter, r *http.Request) map[string]string {
+	details := make(map[string]string)
+	if receipt := rw.Header().Get("X402-Receipt"); receipt != "" {
+		details["receipt"] = truncateStr(receipt, 16)
+	}
+	if rw.Header().Get("X402-Challenge") != "" {
+		details["has_challenge"] = "true"
+	}
+	if r.Header.Get("X402-Proof") != "" {
+		details["has_proof"] = "true"
+	}
+	return details
+}
+
+func truncateStr(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
+// --- Demo pool seeding and legacy Redis keys ---
+
+// templateOpts holds optional Profile B template generation parameters.
+type templateOpts struct {
+	enabled               bool
+	nonceKey              *ec.PrivateKey
+	payeeLockingScriptHex string
+	priceSats             uint64
+}
+
+// seedDemoPools populates nonce, fee, and payment pools with synthetic UTXOs for demo mode.
+func seedDemoPools(noncePool, feePool, paymentPool pool.Pool, count int, feeRate float64, feeUTXOSats uint64, tmpl templateOpts, logger *slog.Logger) {
+	nonceScript, err := noncePool.LockingScriptHex()
+	if err != nil {
+		logger.Error("demo seed: failed to get nonce locking script", "error", err)
+		return
+	}
+	nonceUTXOs := make([]pool.UTXO, count)
+	for i := 0; i < count; i++ {
+		nonceUTXOs[i] = pool.UTXO{
+			TxID:       syntheticTxID(i),
+			Vout:       0,
+			Script:     nonceScript,
+			Satoshis:   1,
+			Synthetic:  true,
+			OriginMode: "mock",
+		}
+	}
+	if tmpl.enabled && tmpl.nonceKey != nil {
+		if err := treasury.GenerateTemplates(tmpl.nonceKey, nonceUTXOs, tmpl.payeeLockingScriptHex, tmpl.priceSats); err != nil {
+			logger.Error("demo seed: failed to generate templates", "error", err)
+			return
+		}
+		logger.Info("demo seed: generated templates for nonce UTXOs", "count", count, "price_sats", tmpl.priceSats)
+	}
+	noncePool.AddExisting(nonceUTXOs)
+
+	feeScript, err := feePool.LockingScriptHex()
+	if err != nil {
+		logger.Error("demo seed: failed to get fee locking script", "error", err)
+		return
+	}
+	feeUTXOs := make([]pool.UTXO, count)
+	for i := 0; i < count; i++ {
+		feeUTXOs[i] = pool.UTXO{
+			TxID:       syntheticTxID(count + i),
+			Vout:       0,
+			Script:     feeScript,
+			Satoshis:   feeUTXOSats,
+			Synthetic:  true,
+			OriginMode: "mock",
+		}
+	}
+	feePool.AddExisting(feeUTXOs)
+
+	paymentScript, err := paymentPool.LockingScriptHex()
+	if err != nil {
+		logger.Error("demo seed: failed to get payment locking script", "error", err)
+		return
+	}
+	paymentUTXOs := make([]pool.UTXO, count)
+	for i := 0; i < count; i++ {
+		paymentUTXOs[i] = pool.UTXO{
+			TxID:       syntheticTxID(2*count + i),
+			Vout:       0,
+			Script:     paymentScript,
+			Satoshis:   100,
+			Synthetic:  true,
+			OriginMode: "mock",
+		}
+	}
+	paymentPool.AddExisting(paymentUTXOs)
+	logger.Info("demo mode: pools seeded", "nonce_utxos", count, "fee_utxos", count, "payment_utxos", count, "fee_sats", feeUTXOSats, "fee_rate", feeRate)
+}
+
+func syntheticTxID(index int) string {
+	b := make([]byte, 32)
+	rand.Read(b)
+	b[0] = byte(index >> 24)
+	b[1] = byte(index >> 16)
+	b[2] = byte(index >> 8)
+	b[3] = byte(index)
+	return hex.EncodeToString(b)
+}
+
+// detectLegacyKeys checks for un-namespaced Redis keys and logs a warning if found.
+func detectLegacyKeys(rdb *redis.Client, logger *slog.Logger) {
+	if rdb == nil {
+		return
+	}
+	ctx := context.Background()
+	for _, prefix := range []string{"nonce:", "fee:", "payment:"} {
+		count, _ := rdb.ZCard(ctx, prefix+"available").Result()
+		spent, _ := rdb.SCard(ctx, prefix+"spent").Result()
+		if count > 0 || spent > 0 {
+			logger.Warn("legacy un-namespaced Redis keys detected",
+				"prefix", prefix, "available", count, "spent", spent,
+				"action", "data now lives under <mode>:<pool>: namespace")
+		}
+	}
 }
 
 func main() {

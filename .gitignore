@@ -1,8 +1,8 @@
-# Binaries
+# Binaries (root-level build outputs only; / prefix avoids ignoring cmd/server/)
 x402-server
 x402-client
-server
-client
+/server
+/client
 keygen
 setup
 *.exe
