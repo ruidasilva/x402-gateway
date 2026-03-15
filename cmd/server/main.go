@@ -13,10 +13,12 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -44,6 +46,9 @@ import (
 	"github.com/merkleworks/x402-bsv/internal/replay"
 	"github.com/merkleworks/x402-bsv/internal/treasury"
 )
+
+//go:embed static/*
+var staticFS embed.FS
 
 // writeJSON encodes a value as JSON and writes it to the response.
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -337,6 +342,38 @@ func detectLegacyKeys(rdb *redis.Client, logger *slog.Logger) {
 				"prefix", prefix, "available", count, "spent", spent,
 				"action", "data now lives under <mode>:<pool>: namespace")
 		}
+	}
+}
+
+// handleDashboardSPA serves the React SPA. Static files from embedded FS;
+// all other paths fall back to index.html for client-side routing.
+func handleDashboardSPA() http.HandlerFunc {
+	sub, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		panic("failed to create sub-filesystem for static: " + err.Error())
+	}
+	fileServer := http.FileServer(http.FS(sub))
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		if strings.HasPrefix(path, "/api/") ||
+			strings.HasPrefix(path, "/health") ||
+			strings.HasPrefix(path, "/nonce/") ||
+			strings.HasPrefix(path, "/delegate/") ||
+			strings.HasPrefix(path, "/v1/") ||
+			strings.HasPrefix(path, "/demo/") {
+			http.NotFound(w, r)
+			return
+		}
+		cleanPath := strings.TrimPrefix(path, "/")
+		if cleanPath == "" {
+			cleanPath = "index.html"
+		}
+		if _, err := fs.Stat(sub, cleanPath); err == nil {
+			fileServer.ServeHTTP(w, r)
+			return
+		}
+		r.URL.Path = "/"
+		fileServer.ServeHTTP(w, r)
 	}
 }
 
