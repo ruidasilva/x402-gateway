@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<!-- Copyright 2026 Merkle Works
+
+     Licensed under the Apache License, Version 2.0 (the "License");
+     you may not use this file except in compliance with the License.
+     You may obtain a copy of the License at
+
+         http://www.apache.org/licenses/LICENSE-2.0
+-->
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>x402 BSV Gateway — Demo Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'SF Mono', 'Menlo', 'Monaco', 'Courier New', monospace;
+            background: #0d1117;
+            color: #c9d1d9;
+            padding: 24px;
+            max-width: 960px;
+            margin: 0 auto;
+        }
+
+        h1 { color: #58a6ff; font-size: 20px; margin-bottom: 4px; }
+        .subtitle {
+            color: #8b949e; font-size: 13px; margin-bottom: 24px;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+
+        /* Connection indicator */
+        .connection { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+        .dot { width: 8px; height: 8px; border-radius: 50%; }
+        .dot.connected { background: #3fb950; }
+        .dot.disconnected { background: #da3633; }
+
+        /* Card grid */
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+        .card {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 16px;
+        }
+        .card h2 {
+            color: #58a6ff; font-size: 13px; margin-bottom: 12px;
+            text-transform: uppercase; letter-spacing: 1px;
+        }
+        .row { display: flex; justify-content: space-between; margin-bottom: 4px; font-size: 13px; }
+        .label { color: #8b949e; }
+        .value { color: #c9d1d9; }
+
+        /* Pool bars */
+        .pool-bar { height: 6px; background: #21262d; border-radius: 3px; margin-top: 6px; overflow: hidden; }
+        .pool-bar-fill { height: 100%; background: #238636; border-radius: 3px; transition: width 0.3s; }
+        .pool-bar-fill.low { background: #d29922; }
+        .pool-bar-fill.critical { background: #da3633; }
+
+        /* Controls */
+        .controls { margin-bottom: 24px; display: flex; gap: 12px; align-items: center; }
+        .btn {
+            background: #238636; color: #fff; border: none; border-radius: 6px;
+            padding: 10px 20px; font-family: inherit; font-size: 14px;
+            cursor: pointer; transition: background 0.2s;
+        }
+        .btn:hover { background: #2ea043; }
+        .btn:disabled { background: #30363d; color: #8b949e; cursor: not-allowed; }
+        .btn.running { background: #1f6feb; }
+        #test-status { font-size: 13px; color: #8b949e; }
+
+        /* Flow visualization */
+        .flow { margin-bottom: 24px; }
+        .flow h2 {
+            color: #58a6ff; font-size: 13px; margin-bottom: 12px;
+            text-transform: uppercase; letter-spacing: 1px;
+        }
+        .step {
+            background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+            padding: 12px 16px; margin-bottom: 8px; font-size: 13px;
+            display: flex; justify-content: space-between; align-items: center;
+            transition: border-color 0.3s, background 0.3s;
+        }
+        .step.active { border-color: #1f6feb; background: #0d1117; }
+        .step.success { border-color: #238636; }
+        .step.error { border-color: #da3633; }
+        .step-num { color: #8b949e; margin-right: 8px; }
+        .step-status { font-weight: bold; }
+        .s-402 { color: #d29922; }
+        .s-200 { color: #3fb950; }
+        .s-err { color: #f85149; }
+
+        /* Event log */
+        .log-section { margin-bottom: 24px; }
+        .log-section h2 {
+            color: #58a6ff; font-size: 13px; margin-bottom: 12px;
+            text-transform: uppercase; letter-spacing: 1px;
+        }
+        .log-section h2 span { font-weight: normal; color: #8b949e; }
+        .event-log {
+            background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+            padding: 12px; max-height: 280px; overflow-y: auto; font-size: 12px;
+        }
+        .event-entry { margin-bottom: 3px; padding-bottom: 3px; border-bottom: 1px solid #21262d; }
+        .ev-time { color: #8b949e; }
+        .ev-type { font-weight: bold; }
+        .ev-type.challenge_issued { color: #d29922; }
+        .ev-type.payment_accepted { color: #3fb950; }
+        .ev-type.payment_rejected { color: #f85149; }
+        .ev-type.http_request { color: #8b949e; }
+        .ev-type.system { color: #58a6ff; }
+
+        /* Responsive */
+        @media (max-width: 640px) {
+            .grid { grid-template-columns: 1fr; }
+            body { padding: 16px; }
+        }
+    </style>
+</head>
+<body>
+    <h1>x402 BSV Gateway</h1>
+    <div class="subtitle">
+        <span>HTTP 402 Payment Required — Demo Dashboard</span>
+        <span class="connection" id="sse-status">
+            <span class="dot disconnected" id="sse-dot"></span>
+            <span id="sse-text">Connecting...</span>
+        </span>
+    </div>
+
+    <div class="grid">
+        <div class="card">
+            <h2>Server Info</h2>
+            <div class="row"><span class="label">Network</span><span class="value" id="info-network">—</span></div>
+            <div class="row"><span class="label">Address</span><span class="value" id="info-address">—</span></div>
+            <div class="row"><span class="label">Payee</span><span class="value" id="info-payee">—</span></div>
+            <div class="row"><span class="label">Price</span><span class="value" id="info-price">—</span></div>
+            <div class="row"><span class="label">Mode</span><span class="value" id="info-mode">—</span></div>
+        </div>
+        <div class="card">
+            <h2>Pool Stats</h2>
+            <div class="row"><span class="label">Nonces</span><span class="value" id="nonce-avail">—</span></div>
+            <div class="pool-bar"><div class="pool-bar-fill" id="nonce-bar" style="width:0%"></div></div>
+            <div class="row" style="margin-top:8px"><span class="label">Fee UTXOs</span><span class="value" id="fee-avail">—</span></div>
+            <div class="pool-bar"><div class="pool-bar-fill" id="fee-bar" style="width:0%"></div></div>
+            <div class="row" style="margin-top:8px"><span class="label">Nonces Spent</span><span class="value" id="nonce-spent">—</span></div>
+            <div class="row"><span class="label">Fees Spent</span><span class="value" id="fee-spent">—</span></div>
+        </div>
+    </div>
+
+    <div class="controls">
+        <button class="btn" id="btn-test" onclick="runTestFlow()">Send Test Request</button>
+        <span id="test-status"></span>
+    </div>
+
+    <div class="flow" id="flow-section" style="display:none;">
+        <h2>Payment Flow</h2>
+        <div class="step" id="step1">
+            <div><span class="step-num">1</span> GET /v1/expensive — initial request</div>
+            <span class="step-status" id="step1-s">—</span>
+        </div>
+        <div class="step" id="step2">
+            <div><span class="step-num">2</span> POST /demo/build-proof — build tx + delegate fees</div>
+            <span class="step-status" id="step2-s">—</span>
+        </div>
+        <div class="step" id="step3">
+            <div><span class="step-num">3</span> GET /v1/expensive — retry with proof</div>
+            <span class="step-status" id="step3-s">—</span>
+        </div>
+    </div>
+
+    <div class="log-section">
+        <h2>Event Log <span>(live)</span></h2>
+        <div class="event-log" id="events"></div>
+    </div>
+
+<script>
+/* ─── State ─── */
+let running = false;
+
+/* ─── SSE ─── */
+function connectSSE() {
+    const src = new EventSource('/demo/events');
+
+    src.addEventListener('connected', function() {
+        document.getElementById('sse-dot').className = 'dot connected';
+        document.getElementById('sse-text').textContent = 'Connected';
+        addEvent('system', 'SSE stream connected');
+    });
+
+    ['challenge_issued','payment_accepted','payment_rejected','http_request'].forEach(function(type) {
+        src.addEventListener(type, function(e) {
+            const d = JSON.parse(e.data);
+            const extra = d.duration_ms ? ' ' + d.duration_ms + 'ms' : '';
+            addEvent(type, d.method + ' ' + d.path + ' [' + d.status + ']' + extra);
+        });
+    });
+
+    src.onerror = function() {
+        document.getElementById('sse-dot').className = 'dot disconnected';
+        document.getElementById('sse-text').textContent = 'Disconnected';
+    };
+}
+
+/* ─── Event Log ─── */
+function addEvent(type, msg) {
+    const el = document.getElementById('events');
+    const t = new Date().toLocaleTimeString();
+    const div = document.createElement('div');
+    div.className = 'event-entry';
+    div.innerHTML = '<span class="ev-time">' + t + '</span> <span class="ev-type ' + type + '">' + type + '</span> ' + msg;
+    el.insertBefore(div, el.firstChild);
+    while (el.children.length > 100) el.removeChild(el.lastChild);
+}
+
+/* ─── Info ─── */
+async function loadInfo() {
+    try {
+        const r = await fetch('/demo/info');
+        const d = await r.json();
+        document.getElementById('info-network').textContent = d.network;
+        document.getElementById('info-address').textContent = trunc(d.address, 24);
+        document.getElementById('info-payee').textContent = trunc(d.payee, 24);
+        document.getElementById('info-price').textContent = d.price_sats + ' sats';
+        document.getElementById('info-mode').textContent = d.mode;
+        updatePools(d.nonce_pool, d.fee_pool);
+    } catch(e) { /* retry next interval */ }
+}
+
+function updatePools(np, fp) {
+    document.getElementById('nonce-avail').textContent = np.available + ' / ' + np.total;
+    document.getElementById('fee-avail').textContent = fp.available + ' / ' + fp.total;
+    document.getElementById('nonce-spent').textContent = np.spent;
+    document.getElementById('fee-spent').textContent = fp.spent;
+
+    setBar('nonce-bar', np.total > 0 ? np.available / np.total * 100 : 0);
+    setBar('fee-bar', fp.total > 0 ? fp.available / fp.total * 100 : 0);
+}
+
+function setBar(id, pct) {
+    const b = document.getElementById(id);
+    b.style.width = pct + '%';
+    b.className = 'pool-bar-fill' + (pct < 10 ? ' critical' : pct < 30 ? ' low' : '');
+}
+
+function trunc(s, n) { return s && s.length > n ? s.substring(0, n) + '...' : (s || '—'); }
+
+/* ─── Test Flow ─── */
+async function runTestFlow() {
+    if (running) return;
+    running = true;
+
+    const btn = document.getElementById('btn-test');
+    btn.disabled = true;
+    btn.className = 'btn running';
+    btn.textContent = 'Running...';
+    document.getElementById('test-status').textContent = '';
+    document.getElementById('test-status').style.color = '#8b949e';
+
+    document.getElementById('flow-section').style.display = '';
+    resetSteps();
+
+    try {
+        /* Step 1: GET /v1/expensive → expect 402 */
+        setStep('step1', 'active', 'running...');
+        const t1 = performance.now();
+        const r1 = await fetch('/v1/expensive');
+        const d1 = ms(t1);
+
+        if (r1.status !== 402) {
+            setStep('step1', 'error', r1.status + ' (expected 402) ' + d1);
+            throw new Error('Expected 402, got ' + r1.status);
+        }
+        setStep('step1', 'success', '402 — ' + d1, 's-402');
+
+        const challengeEncoded = r1.headers.get('X402-Challenge');
+        if (!challengeEncoded) throw new Error('Missing X402-Challenge header');
+
+        /* Step 2: POST /demo/build-proof */
+        setStep('step2', 'active', 'running...');
+        const t2 = performance.now();
+        const r2 = await fetch('/demo/build-proof', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ challenge: challengeEncoded })
+        });
+        const d2 = ms(t2);
+
+        if (!r2.ok) {
+            const err = await r2.json();
+            setStep('step2', 'error', r2.status + ' — ' + d2);
+            throw new Error('Build proof failed: ' + err.error);
+        }
+        const proof = await r2.json();
+        setStep('step2', 'success', '200 — ' + d2, 's-200');
+
+        /* Step 3: GET /v1/expensive with proof */
+        setStep('step3', 'active', 'running...');
+        const t3 = performance.now();
+        const r3 = await fetch('/v1/expensive', {
+            headers: { 'X402-Proof': proof.proof_header }
+        });
+        const d3 = ms(t3);
+
+        if (!r3.ok) {
+            const err = await r3.json();
+            setStep('step3', 'error', r3.status + ' — ' + d3);
+            throw new Error('Payment rejected: ' + (err.code || err.message));
+        }
+        setStep('step3', 'success', '200 — ' + d3, 's-200');
+
+        const receipt = r3.headers.get('X402-Receipt') || '(none)';
+        const txid = proof.txid || '(none)';
+        const total = parseInt(d1) + parseInt(d2) + parseInt(d3);
+        document.getElementById('test-status').textContent =
+            'Complete in ~' + total + 'ms — TxID: ' + trunc(txid, 20);
+        document.getElementById('test-status').style.color = '#3fb950';
+
+    } catch(e) {
+        document.getElementById('test-status').textContent = 'Error: ' + e.message;
+        document.getElementById('test-status').style.color = '#f85149';
+    } finally {
+        await loadInfo();
+        running = false;
+        btn.disabled = false;
+        btn.className = 'btn';
+        btn.textContent = 'Send Test Request';
+    }
+}
+
+function resetSteps() {
+    ['step1','step2','step3'].forEach(function(id) {
+        document.getElementById(id).className = 'step';
+        document.getElementById(id + '-s').textContent = '—';
+        document.getElementById(id + '-s').className = 'step-status';
+    });
+}
+
+function setStep(id, state, text, cls) {
+    document.getElementById(id).className = 'step ' + state;
+    const s = document.getElementById(id + '-s');
+    s.textContent = text;
+    s.className = 'step-status' + (cls ? ' ' + cls : '');
+}
+
+function ms(start) { return Math.round(performance.now() - start) + 'ms'; }
+
+/* ─── Init ─── */
+loadInfo();
+connectSSE();
+setInterval(loadInfo, 5000);
+</script>
+</body>
+</html>

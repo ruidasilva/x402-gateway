@@ -51,6 +51,9 @@ client-js/dist/
 
 # Compiled binaries (root)
 delegator
+recover
+recover-linux
+x402-server-linux
 
 # IDE / workspace
 .claude/
