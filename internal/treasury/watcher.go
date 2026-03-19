@@ -208,7 +208,7 @@ func (tw *TreasuryWatcher) Start(stop <-chan struct{}) {
 // poll queries WoC for unspent UTXOs, updates Redis and in-memory cache,
 // then reconciles mempool/spent/leased state.
 func (tw *TreasuryWatcher) poll() error {
-	url := tw.baseURL + "/address/" + tw.address + "/unspent"
+	url := tw.baseURL + "/address/" + tw.address + "/confirmed/unspent"
 
 	resp, err := tw.httpClient.Get(url)
 	if err != nil {
@@ -227,22 +227,22 @@ func (tw *TreasuryWatcher) poll() error {
 		return tw.lastErr
 	}
 
-	// WoC returns 404 for addresses with no history, treat as empty
+	// 404 is an error — the confirmed/unspent endpoint returns 200 with an empty
+	// array for addresses with no unspent outputs. A 404 means the endpoint changed
+	// or the address format is invalid. NEVER silently clear confirmed UTXOs on 404.
 	if resp.StatusCode == http.StatusNotFound {
 		tw.mu.Lock()
-		tw.utxos = []FundingUTXO{}
-		tw.lastPoll = time.Now()
-		tw.lastErr = nil
-		mempoolSnap := snapshotMempool(tw.mempool)
-		spentSnap := snapshotSpent(tw.spent)
-		leasedSnap := snapshotLeases(tw.leased)
+		tw.lastErr = fmt.Errorf("WoC returned 404 — endpoint may be deprecated: %s", url)
 		tw.mu.Unlock()
+		return tw.lastErr
+	}
 
-		tw.persistToRedis([]FundingUTXO{})
-		tw.persistMempool(mempoolSnap)
-		tw.persistSpent(spentSnap)
-		tw.persistLeased(leasedSnap)
-		return nil
+	// Rate limiting — return error so backoff logic kicks in
+	if resp.StatusCode == http.StatusTooManyRequests {
+		tw.mu.Lock()
+		tw.lastErr = fmt.Errorf("WoC rate limited (429)")
+		tw.mu.Unlock()
+		return tw.lastErr
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -336,9 +336,7 @@ func (tw *TreasuryWatcher) poll() error {
 	tw.persistSpent(spentSnap)
 	tw.persistLeased(leasedSnap)
 
-	if len(utxos) > 0 {
-		tw.logger.Info("poll complete", "utxo_count", len(utxos), "mempool_count", len(mempoolSnap))
-	}
+	tw.logger.Info("poll complete", "utxo_count", len(utxos), "mempool_count", len(mempoolSnap))
 
 	return nil
 }

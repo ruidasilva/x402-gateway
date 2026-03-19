@@ -160,6 +160,10 @@ type ValidateOnChainResult struct {
 // Zombie UTXOs are retired via MarkSpent so they're never re-issued.
 // Also retires any currently-leased UTXOs that are not in the on-chain set.
 //
+// Safety invariants:
+//   - Empty on-chain set with non-empty pool → abort (likely API failure)
+//   - >50% zombies → abort unless force=true (likely bad data)
+//
 // onChainUnspent should be a set of "txid:vout" strings from the blockchain.
 func ValidateOnChain(p Pool, onChainUnspent map[string]bool, logger *slog.Logger) ValidateOnChainResult {
 	result := ValidateOnChainResult{Pool: p.Address()}
@@ -170,19 +174,57 @@ func ValidateOnChain(p Pool, onChainUnspent map[string]bool, logger *slog.Logger
 		return result
 	}
 
+	if len(available) == 0 {
+		return result
+	}
+
+	// SAFETY: refuse to mark all UTXOs as zombies when on-chain set is empty.
+	// An empty on-chain set almost certainly means the API failed, not that
+	// every single UTXO was genuinely spent.
+	if len(onChainUnspent) == 0 {
+		logger.Error("on-chain validation: SAFETY ABORT — on-chain set is empty but pool has UTXOs",
+			"address", p.Address(),
+			"pool_available", len(available),
+		)
+		result.Checked = len(available)
+		return result
+	}
+
+	// First pass: count zombies
+	zombies := make([]UTXO, 0)
 	for _, u := range available {
 		result.Checked++
 		outpoint := u.Outpoint()
 		if onChainUnspent[outpoint] {
 			result.Valid++
 		} else {
-			p.MarkSpent(u.TxID, u.Vout)
-			result.Zombies++
-			logger.Warn("on-chain validation: retired zombie UTXO",
-				"outpoint", outpoint,
-				"address", p.Address(),
-			)
+			zombies = append(zombies, u)
 		}
+	}
+
+	// SAFETY: threshold check — if >50% would be marked, abort
+	if len(zombies) > 0 {
+		pct := (len(zombies) * 100) / len(available)
+		if pct > 50 {
+			logger.Error("on-chain validation: SAFETY ABORT — too many zombies",
+				"address", p.Address(),
+				"zombies", len(zombies),
+				"available", len(available),
+				"pct", pct,
+			)
+			// Don't mutate anything
+			return result
+		}
+	}
+
+	// Second pass: mark zombies as spent
+	for _, u := range zombies {
+		p.MarkSpent(u.TxID, u.Vout)
+		result.Zombies++
+		logger.Warn("on-chain validation: retired zombie UTXO",
+			"outpoint", u.Outpoint(),
+			"address", p.Address(),
+		)
 	}
 
 	return result

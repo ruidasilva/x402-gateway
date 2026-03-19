@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -578,7 +579,7 @@ func (d *DashboardAPI) handleSweepRevenue() http.HandlerFunc {
 	}
 }
 
-// wocUnspentItem matches the WoC /address/{addr}/unspent JSON response.
+// wocUnspentItem matches the WoC /address/{addr}/confirmed/unspent response item.
 type wocUnspentItem struct {
 	TxHash string `json:"tx_hash"`
 	TxPos  int    `json:"tx_pos"`
@@ -586,11 +587,12 @@ type wocUnspentItem struct {
 	Height int    `json:"height"`
 }
 
-// fetchPayeeUnspent queries WoC for unspent UTXOs at the given address.
+// fetchPayeeUnspent queries WoC for confirmed unspent UTXOs at the given address.
+// Uses the correct /confirmed/unspent endpoint (the old /unspent was deprecated).
 func fetchPayeeUnspent(address string, baseURL string) ([]wocUnspentItem, error) {
-	url := baseURL + "/address/" + address + "/unspent"
+	url := baseURL + "/address/" + address + "/confirmed/unspent"
 
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Get(url)
 	if err != nil {
 		return nil, fmt.Errorf("WoC request failed: %w", err)
@@ -600,13 +602,30 @@ func fetchPayeeUnspent(address string, baseURL string) ([]wocUnspentItem, error)
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, nil
 	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("WoC returned HTTP %d", resp.StatusCode)
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read body: %w", err)
 	}
 
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("WoC returned HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Handle envelope format: {"address":"...","result":[...]}
+	type envelope struct {
+		Address string           `json:"address"`
+		Result  []wocUnspentItem `json:"result"`
+	}
+	var env envelope
+	if err := json.Unmarshal(body, &env); err == nil && env.Address != "" {
+		return env.Result, nil
+	}
+
+	// Fallback: plain array
 	var items []wocUnspentItem
-	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
-		return nil, fmt.Errorf("parse response: %w", err)
+	if err := json.Unmarshal(body, &items); err != nil {
+		return nil, fmt.Errorf("parse response: %w (body: %.200s)", err, string(body))
 	}
 	return items, nil
 }

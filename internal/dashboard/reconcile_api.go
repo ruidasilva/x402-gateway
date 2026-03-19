@@ -30,13 +30,22 @@ type wocUnspent struct {
 
 // ReconcileResult is the per-pool reconciliation outcome.
 type ReconcileResult struct {
-	Pool        string `json:"pool"`
-	Address     string `json:"address"`
-	Checked     int    `json:"checked"`      // available UTXOs examined
-	Valid       int    `json:"valid"`         // still unspent on-chain
-	MarkedSpent int    `json:"marked_spent"`  // newly marked spent (zombie)
-	Error       string `json:"error,omitempty"`
+	Pool            string `json:"pool"`
+	Address         string `json:"address"`
+	Checked         int    `json:"checked"`                    // available UTXOs examined
+	Valid           int    `json:"valid"`                      // still unspent on-chain
+	MarkedSpent     int    `json:"marked_spent"`               // newly marked spent (zombie)
+	DryRun          bool   `json:"dry_run,omitempty"`          // true if no mutations were performed
+	Aborted         bool   `json:"aborted,omitempty"`          // true if safety threshold prevented action
+	OnChainCount    int    `json:"on_chain_count,omitempty"`   // UTXOs found on-chain for this address
+	Error           string `json:"error,omitempty"`
 }
+
+// SafetyThresholdPct is the maximum percentage of available UTXOs that can be
+// marked as zombies in a single reconciliation run. If more than this fraction
+// would be marked spent, the operation aborts — it's far more likely the API
+// returned bad data than that all UTXOs were genuinely spent.
+const SafetyThresholdPct = 50
 
 // handleReconcilePools checks all pool UTXOs against the blockchain (WoC)
 // and marks any already-spent UTXOs as spent in the pool.
@@ -44,6 +53,12 @@ type ReconcileResult struct {
 // This fixes "zombie" UTXOs that were spent on-chain by previous operations
 // (e.g. test flows, delegator usage) but never marked spent in the pool
 // due to the missing MarkSpent bug.
+//
+// Safety features:
+//   - dry_run=true (query param): reports what would be marked but doesn't mutate
+//   - force=true (query param): bypasses the 50% safety threshold (requires explicit opt-in)
+//   - Empty on-chain response guard: refuses to mark everything as zombie
+//   - Threshold check: aborts if >50% of pool UTXOs would be marked spent
 func (d *DashboardAPI) handleReconcilePools() http.HandlerFunc {
 	logger := slog.Default().With("component", "dashboard.reconcile")
 
@@ -54,6 +69,9 @@ func (d *DashboardAPI) handleReconcilePools() http.HandlerFunc {
 			})
 			return
 		}
+
+		dryRun := r.URL.Query().Get("dry_run") == "true"
+		force := r.URL.Query().Get("force") == "true"
 
 		baseURL := d.wocBaseURL
 		client := &http.Client{Timeout: 15 * time.Second}
@@ -70,7 +88,7 @@ func (d *DashboardAPI) handleReconcilePools() http.HandlerFunc {
 		results := make([]ReconcileResult, 0, len(pools))
 
 		for _, p := range pools {
-			result := reconcilePool(p.name, p.pool, baseURL, client, logger)
+			result := reconcilePool(p.name, p.pool, baseURL, client, logger, dryRun, force)
 			results = append(results, result)
 		}
 
@@ -81,6 +99,7 @@ func (d *DashboardAPI) handleReconcilePools() http.HandlerFunc {
 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"success":       true,
+			"dry_run":       dryRun,
 			"pools":         results,
 			"total_zombies": totalMarked,
 		})
@@ -89,13 +108,18 @@ func (d *DashboardAPI) handleReconcilePools() http.HandlerFunc {
 
 // reconcilePool fetches on-chain unspent UTXOs for a pool's address from WoC,
 // then marks any pool UTXOs not found on-chain as spent.
-func reconcilePool(name string, p pool.Pool, baseURL string, client *http.Client, logger *slog.Logger) ReconcileResult {
+//
+// Safety invariants:
+//  1. Empty on-chain response → abort (likely API failure, not genuine empty)
+//  2. >50% would be marked → abort unless force=true (likely bad data)
+//  3. dry_run=true → report only, no mutations
+func reconcilePool(name string, p pool.Pool, baseURL string, client *http.Client, logger *slog.Logger, dryRun, force bool) ReconcileResult {
 	addr := p.Address()
 	if addr == "" {
-		return ReconcileResult{Pool: name, Error: "pool has no address"}
+		return ReconcileResult{Pool: name, Error: "pool has no address", DryRun: dryRun}
 	}
 
-	result := ReconcileResult{Pool: name, Address: addr}
+	result := ReconcileResult{Pool: name, Address: addr, DryRun: dryRun}
 
 	// Get available UTXOs from the pool
 	available, err := p.ListAvailable()
@@ -119,6 +143,22 @@ func reconcilePool(name string, p pool.Pool, baseURL string, client *http.Client
 		return result
 	}
 
+	result.OnChainCount = len(onChain)
+
+	// SAFETY INVARIANT 1: If on-chain returns empty but pool has UTXOs,
+	// the API likely failed silently (404 from deprecated endpoint, rate limit, etc.).
+	// Refuse to mark everything as zombie — that's almost certainly wrong.
+	if len(onChain) == 0 && len(available) > 0 {
+		result.Error = fmt.Sprintf("SAFETY ABORT: WoC returned 0 on-chain UTXOs but pool has %d available — refusing to mark all as zombies (likely API failure or deprecated endpoint)", len(available))
+		result.Aborted = true
+		logger.Error("reconcile: SAFETY ABORT — empty on-chain response",
+			"pool", name,
+			"address", addr,
+			"pool_available", len(available),
+		)
+		return result
+	}
+
 	// Build lookup set: "txid:vout" → true
 	onChainSet := make(map[string]bool, len(onChain))
 	for _, u := range onChain {
@@ -126,21 +166,52 @@ func reconcilePool(name string, p pool.Pool, baseURL string, client *http.Client
 		onChainSet[key] = true
 	}
 
-	// Compare pool UTXOs against on-chain set
+	// First pass: count zombies without mutating
+	zombieOutpoints := make([]struct{ txid string; vout uint32; key string; sats uint64 }, 0)
+	validCount := 0
 	for _, u := range available {
 		key := fmt.Sprintf("%s:%d", u.TxID, u.Vout)
 		if onChainSet[key] {
-			result.Valid++
+			validCount++
 		} else {
-			// UTXO not found on-chain — it's been spent, mark it
-			p.MarkSpent(u.TxID, u.Vout)
-			result.MarkedSpent++
-			logger.Info("reconcile: marked zombie spent",
-				"pool", name,
-				"outpoint", key,
-				"satoshis", u.Satoshis,
-			)
+			zombieOutpoints = append(zombieOutpoints, struct{ txid string; vout uint32; key string; sats uint64 }{u.TxID, u.Vout, key, u.Satoshis})
 		}
+	}
+
+	// SAFETY INVARIANT 2: If more than SafetyThresholdPct% would be marked,
+	// abort unless force=true — probably bad API data, not genuine spend.
+	zombiePct := (len(zombieOutpoints) * 100) / len(available)
+	if !force && zombiePct > SafetyThresholdPct {
+		result.Error = fmt.Sprintf("SAFETY ABORT: %d of %d UTXOs (%d%%) would be marked as zombies, exceeding %d%% threshold — use force=true to override",
+			len(zombieOutpoints), len(available), zombiePct, SafetyThresholdPct)
+		result.Aborted = true
+		result.Valid = validCount
+		result.MarkedSpent = 0 // nothing mutated
+		logger.Error("reconcile: SAFETY ABORT — threshold exceeded",
+			"pool", name,
+			"address", addr,
+			"zombies", len(zombieOutpoints),
+			"available", len(available),
+			"pct", zombiePct,
+			"threshold", SafetyThresholdPct,
+		)
+		return result
+	}
+
+	result.Valid = validCount
+
+	// Second pass: apply mutations (unless dry_run)
+	for _, z := range zombieOutpoints {
+		if !dryRun {
+			p.MarkSpent(z.txid, z.vout)
+		}
+		result.MarkedSpent++
+		logger.Info("reconcile: zombie detected",
+			"pool", name,
+			"outpoint", z.key,
+			"satoshis", z.sats,
+			"dry_run", dryRun,
+		)
 	}
 
 	logger.Info("reconcile complete",
@@ -150,14 +221,22 @@ func reconcilePool(name string, p pool.Pool, baseURL string, client *http.Client
 		"valid", result.Valid,
 		"marked_spent", result.MarkedSpent,
 		"on_chain_utxos", len(onChain),
+		"dry_run", dryRun,
 	)
 
 	return result
 }
 
-// fetchUnspent queries WoC for all unspent UTXOs at an address.
+// fetchUnspent queries WoC for all confirmed unspent UTXOs at an address.
+//
+// IMPORTANT: Uses /address/{addr}/confirmed/unspent (the current WoC endpoint).
+// The old /address/{addr}/unspent endpoint was deprecated and returns 404,
+// which previously caused catastrophic false-zombie classification.
+//
+// Error handling: all non-200 responses return an error (including 404).
+// The caller must never receive an empty slice from a failed API call.
 func fetchUnspent(baseURL, address string, client *http.Client) ([]wocUnspent, error) {
-	url := baseURL + "/address/" + address + "/unspent"
+	url := baseURL + "/address/" + address + "/confirmed/unspent"
 
 	resp, err := client.Get(url)
 	if err != nil {
@@ -170,13 +249,15 @@ func fetchUnspent(baseURL, address string, client *http.Client) ([]wocUnspent, e
 		return nil, fmt.Errorf("read response body: %w", err)
 	}
 
-	// 404 = address with no history → empty
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, nil
-	}
-
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return nil, fmt.Errorf("WoC rate limited (429) — try again in a few seconds")
+	}
+
+	// 404 is now an ERROR, not "empty set". The confirmed/unspent endpoint
+	// returns 200 with an empty array for addresses with no unspent outputs.
+	// A 404 means the endpoint itself doesn't exist (API change).
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("WoC returned 404 — endpoint may be deprecated or address format invalid: %s", url)
 	}
 
 	if resp.StatusCode != http.StatusOK {
