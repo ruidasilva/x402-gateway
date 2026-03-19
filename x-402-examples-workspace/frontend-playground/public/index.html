@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>x402 Developer Playground</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <h1>x402 <span class="accent">Developer Playground</span></h1>
+      <p class="subtitle">Payment-gated HTTP APIs — request → 402 → payment → proof → response</p>
+    </div>
+  </header>
+
+  <nav id="nav">
+    <a href="/weather" data-route="weather" class="nav-link">Weather API</a>
+    <a href="/summarize" data-route="summarize" class="nav-link">LLM Summarizer</a>
+    <a href="/articles" data-route="articles" class="nav-link">Paid Website</a>
+    <a href="/data" data-route="data" class="nav-link">Data Marketplace</a>
+    <a href="/query" data-route="query" class="nav-link">Knowledge Query</a>
+    <a href="/middleware" data-route="middleware" class="nav-link">Middleware</a>
+  </nav>
+
+  <main id="app">
+    <!-- Landing page -->
+    <div id="landing" class="page active">
+      <div class="landing-hero">
+        <h2>HTTP Payment Primitive</h2>
+        <p>Select an example above to see the x402 payment flow in action.</p>
+        <div class="flow-diagram">
+          <div class="flow-step">Request Sent</div>
+          <div class="flow-arrow">↓</div>
+          <div class="flow-step highlight">402 Payment Required</div>
+          <div class="flow-arrow">↓</div>
+          <div class="flow-step">Payment Broadcast</div>
+          <div class="flow-arrow">↓</div>
+          <div class="flow-step">Proof Attached</div>
+          <div class="flow-arrow">↓</div>
+          <div class="flow-step success">Response Received</div>
+        </div>
+        <div class="examples-grid">
+          <div class="example-card" onclick="navigate('weather')">
+            <h3>Weather API</h3>
+            <span class="price">3 sats</span>
+            <p>GET /api/weather/:city</p>
+          </div>
+          <div class="example-card" onclick="navigate('summarize')">
+            <h3>LLM Summarizer</h3>
+            <span class="price">5 sats</span>
+            <p>POST /api/summarize</p>
+          </div>
+          <div class="example-card" onclick="navigate('articles')">
+            <h3>Paid Website</h3>
+            <span class="price">2 sats</span>
+            <p>GET /api/articles/:slug</p>
+          </div>
+          <div class="example-card" onclick="navigate('data')">
+            <h3>Data Marketplace</h3>
+            <span class="price">4 sats</span>
+            <p>GET /api/financial/sp500/history</p>
+          </div>
+          <div class="example-card" onclick="navigate('query')">
+            <h3>Knowledge Query</h3>
+            <span class="price">3 sats</span>
+            <p>POST /api/query</p>
+          </div>
+          <div class="example-card" onclick="navigate('middleware')">
+            <h3>Express Middleware</h3>
+            <span class="price">1-10 sats</span>
+            <p>Payment gating middleware</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Weather page -->
+    <div id="page-weather" class="page">
+      <div class="page-header">
+        <h2>Weather API</h2>
+        <span class="badge">3 sats</span>
+        <code>GET /api/weather/:city</code>
+      </div>
+      <div class="controls">
+        <label>City:
+          <select id="weather-city">
+            <option value="london">London</option>
+            <option value="tokyo">Tokyo</option>
+            <option value="new-york">New York</option>
+            <option value="sydney">Sydney</option>
+            <option value="paris">Paris</option>
+            <option value="lisbon">Lisbon</option>
+            <option value="dubai">Dubai</option>
+          </select>
+        </label>
+        <button onclick="runWeather()" class="btn-primary">Send Request</button>
+      </div>
+      <div id="weather-inspector" class="inspector"></div>
+      <div id="weather-response" class="response-panel"></div>
+    </div>
+
+    <!-- Summarize page -->
+    <div id="page-summarize" class="page">
+      <div class="page-header">
+        <h2>LLM Summarizer</h2>
+        <span class="badge">5 sats</span>
+        <code>POST /api/summarize</code>
+      </div>
+      <div class="controls">
+        <textarea id="summarize-text" rows="4" placeholder="Enter text to summarize...">Micropayments have long been theorized as an alternative to advertising-funded content. With Bitcoin's low transaction fees, this vision is finally practical. The x402 protocol enables any HTTP endpoint to require payment before serving a response. Instead of subscriptions or API keys, each request settles independently using a single Bitcoin transaction. This creates a new economic model for the web.</textarea>
+        <button onclick="runSummarize()" class="btn-primary">Summarize</button>
+      </div>
+      <div id="summarize-inspector" class="inspector"></div>
+      <div id="summarize-response" class="response-panel"></div>
+    </div>
+
+    <!-- Articles page -->
+    <div id="page-articles" class="page">
+      <div class="page-header">
+        <h2>Paid Website</h2>
+        <span class="badge">2 sats</span>
+        <code>GET /api/articles/:slug</code>
+        <span style="color: var(--text-muted); font-size: 0.82rem;">Preview free · Full content paid</span>
+      </div>
+      <div class="controls">
+        <label>Article:
+          <select id="article-slug">
+            <option value="bitcoin-micropayments">Bitcoin Micropayments</option>
+            <option value="machine-commerce">Machine Commerce</option>
+            <option value="request-level-settlement">Request-Level Settlement</option>
+          </select>
+        </label>
+        <button onclick="runArticle()" class="btn-primary">Unlock Full Article</button>
+      </div>
+      <div id="articles-inspector" class="inspector"></div>
+      <div id="articles-response" class="response-panel"></div>
+    </div>
+
+    <!-- Data page -->
+    <div id="page-data" class="page">
+      <div class="page-header">
+        <h2>Data Marketplace</h2>
+        <span class="badge">4 sats</span>
+        <code>GET /api/financial/sp500/history</code>
+      </div>
+      <div class="controls">
+        <label>Dataset:
+          <select id="data-dataset">
+            <option value="sp500">S&amp;P 500</option>
+            <option value="nasdaq">NASDAQ</option>
+          </select>
+        </label>
+        <button onclick="runData()" class="btn-primary">Purchase Dataset</button>
+      </div>
+      <div id="data-inspector" class="inspector"></div>
+      <div id="data-response" class="response-panel"></div>
+    </div>
+
+    <!-- Query page -->
+    <div id="page-query" class="page">
+      <div class="page-header">
+        <h2>Knowledge Query API</h2>
+        <span class="badge">3 sats</span>
+        <code>POST /api/query</code>
+      </div>
+      <div class="controls">
+        <label>Question:
+          <input type="text" id="query-question" value="What is the capital of Portugal?" placeholder="Ask a question..." />
+        </label>
+        <button onclick="runQuery()" class="btn-primary">Ask</button>
+      </div>
+      <div id="query-inspector" class="inspector"></div>
+      <div id="query-response" class="response-panel"></div>
+    </div>
+
+    <!-- Middleware page -->
+    <div id="page-middleware" class="page">
+      <div class="page-header">
+        <h2>Express Middleware Example</h2>
+        <span class="badge">1-10 sats</span>
+        <code>x402Middleware({ price })</code>
+      </div>
+      <div class="code-block">
+        <pre><code>const { x402Middleware } = require("./shared/x402-middleware");
+
+// Add to any Express route:
+app.get("/api/weather/:city",
+  x402Middleware({ price: 3, description: "Weather data" }),
+  weatherHandler
+);</code></pre>
+      </div>
+      <div class="controls">
+        <label>Endpoint:
+          <select id="middleware-endpoint">
+            <option value="echo">Echo (1 sat)</option>
+            <option value="premium">Premium (10 sats)</option>
+          </select>
+        </label>
+        <button onclick="runMiddleware()" class="btn-primary">Send Request</button>
+      </div>
+      <div id="middleware-inspector" class="inspector"></div>
+      <div id="middleware-response" class="response-panel"></div>
+    </div>
+  </main>
+
+  <footer>
+    <p>x402 Developer Examples — <a href="https://github.com" target="_blank">Protocol Specification</a></p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "name": "x402-developer-examples",
+  "version": "1.0.0",
+  "description": "x402 Developer Examples Playground — payment-gated API demos",
+  "private": true,
+  "scripts": {
+    "dev": "node examples/server.js",
+    "start": "node examples/server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0"
+  }
+}

@@ -74,7 +74,11 @@ type Config struct {
 	// Delegator configuration
 	DelegatorPort     int  // DELEGATOR_PORT (default 8403, used by cmd/delegator)
 	DelegatorEmbedded bool // DELEGATOR_EMBEDDED (true = gateway hosts delegator in-process)
-	DelegatorURL      string // DELEGATOR_URL (for dashboard config, e.g. http://localhost:8403)
+	DelegatorURL         string // DELEGATOR_URL (for dashboard config, e.g. http://localhost:8403)
+	DelegatorInternalURL string // DELEGATOR_INTERNAL_URL (server-side proxy URL, e.g. http://x402-delegator:8403 in Docker)
+
+	// Developer Playground backend URL (for reverse proxy)
+	PlaygroundURL string // PLAYGROUND_URL (e.g. http://x402-playground:3000)
 
 	// WhatsOnChain API base URL override (optional)
 	WocApiURL string // WOC_API_URL (e.g. https://api.whatsonchain.com/v1/bsv/main)
@@ -134,7 +138,11 @@ func Load() (*Config, error) {
 		// Delegator
 		DelegatorPort:     envIntOrDefault("DELEGATOR_PORT", 8403),
 		DelegatorEmbedded: envBoolOrDefault("DELEGATOR_EMBEDDED", false),
-		DelegatorURL:      os.Getenv("DELEGATOR_URL"),
+		DelegatorURL:         os.Getenv("DELEGATOR_URL"),
+		DelegatorInternalURL: os.Getenv("DELEGATOR_INTERNAL_URL"),
+
+		// Developer Playground
+		PlaygroundURL: envOrDefault("PLAYGROUND_URL", ""),
 
 		// WhatsOnChain API URL override
 		WocApiURL: os.Getenv("WOC_API_URL"),

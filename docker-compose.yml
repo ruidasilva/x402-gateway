@@ -25,8 +25,13 @@ services:
     environment:
       REDIS_URL: redis://redis:6379
       REDIS_ENABLED: "true"
-      # Browser-accessible URL for the dashboard (the gateway never calls the delegator)
+      # Browser-accessible URL for the dashboard config endpoint
       DELEGATOR_URL: "http://localhost:${DELEGATOR_PORT:-8403}"
+      # Server-side URL for the delegate proxy (Docker internal network)
+      DELEGATOR_INTERNAL_URL: "http://x402-delegator:${DELEGATOR_PORT:-8403}"
+      # Developer Playground reverse proxy target
+      # Use host.docker.internal to reach playground running on host Mac
+      PLAYGROUND_URL: "http://host.docker.internal:3000"
     restart: unless-stopped
 
   x402-delegator:
@@ -43,6 +48,18 @@ services:
       REDIS_URL: redis://redis:6379
       REDIS_ENABLED: "true"
       PORT: "${DELEGATOR_PORT:-8403}"
+    restart: unless-stopped
+
+  x402-playground:
+    build:
+      context: ./x-402-examples-workspace
+      dockerfile: Dockerfile
+    # Port exposed only on Docker network; gateway proxies via /playground/
+    # Uncomment to access directly: ports: ["${PLAYGROUND_PORT:-3001}:3000"]
+    env_file: .env
+    environment:
+      PORT: "3000"
+      PLAYGROUND_BASE_PATH: "/playground"
     restart: unless-stopped
 
 volumes:

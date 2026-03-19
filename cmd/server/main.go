@@ -12,23 +12,21 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"embed"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
-	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv-blockchain/go-sdk/script"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
@@ -47,14 +45,153 @@ import (
 	"github.com/merkleworks/x402-bsv/internal/treasury"
 )
 
-//go:embed static/*
-var staticFS embed.FS
-
 // writeJSON encodes a value as JSON and writes it to the response.
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
+}
+
+// handleEmbeddedDelegateX402 returns an HTTP handler for the embedded delegation
+// endpoint. It mirrors the standalone delegator's simplified API: accepts
+// { partial_tx } and returns { completed_tx, txid }, parsing and inferring all
+// required DelegationRequest fields from the transaction itself.
+func handleEmbeddedDelegateX402(deleg *delegator.Delegator, payeeLockingScriptHex string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			PartialTx string `json:"partial_tx"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "invalid request body: " + err.Error(),
+			})
+			return
+		}
+		if req.PartialTx == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "partial_tx is required",
+			})
+			return
+		}
+
+		txBytes, err := hex.DecodeString(req.PartialTx)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "invalid partial_tx hex: " + err.Error(),
+			})
+			return
+		}
+
+		tx, err := transaction.NewTransactionFromBytes(txBytes)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "cannot parse partial transaction: " + err.Error(),
+			})
+			return
+		}
+
+		if tx.InputCount() < 1 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "partial transaction has no inputs",
+			})
+			return
+		}
+
+		input0 := tx.Inputs[0]
+		if input0.SourceTXID == nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "input 0 has no source txid",
+			})
+			return
+		}
+		nonceTxID := input0.SourceTXID.String()
+		nonceVout := input0.SourceTxOutIndex
+
+		if input0.UnlockingScript == nil || len(*input0.UnlockingScript) == 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "invalid template transaction: input[0] has no unlocking script (unsigned)",
+			})
+			return
+		}
+
+		// Enforce sighash 0xC3 (SIGHASH_SINGLE|ANYONECANPAY|FORKID)
+		sighashByte, err := extractSighashByte(*input0.UnlockingScript)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "invalid template transaction: cannot extract sighash from input[0]: " + err.Error(),
+			})
+			return
+		}
+		if sighashByte != treasury.TemplateSigHashByte {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": fmt.Sprintf("invalid template transaction: input[0] sighash 0x%02X, required 0xC3 (SIGHASH_SINGLE|ANYONECANPAY|FORKID)", sighashByte),
+			})
+			return
+		}
+
+		if len(tx.Outputs) < 1 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "partial transaction has no outputs",
+			})
+			return
+		}
+		if tx.Outputs[0].Satoshis == 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "invalid template transaction: output[0] has zero value",
+			})
+			return
+		}
+		expectedAmount := int64(tx.Outputs[0].Satoshis)
+
+		// Deterministic hash of nonce outpoint for replay protection
+		h := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", nonceTxID, nonceVout)))
+		challengeHash := hex.EncodeToString(h[:])
+
+		delegReq := delegator.DelegationRequest{
+			PartialTxHex:                  req.PartialTx,
+			ChallengeHash:                 challengeHash,
+			ExpectedPayeeLockingScriptHex: payeeLockingScriptHex,
+			ExpectedAmount:                expectedAmount,
+			NonceOutpoint: &delegator.NonceOutpointRef{
+				TxID:     nonceTxID,
+				Vout:     nonceVout,
+				Satoshis: 1, // nonce pool UTXOs are always 1 sat
+			},
+			TemplateMode: true,
+		}
+
+		result, err := deleg.Accept(delegReq)
+		if err != nil {
+			if delegErr, ok := err.(*delegator.DelegationError); ok {
+				writeJSON(w, delegErr.Status, delegErr)
+				return
+			}
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"error": err.Error(),
+			})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"completed_tx": result.RawTxHex,
+			"txid":         result.TxID,
+		})
+	}
+}
+
+// extractSighashByte parses a P2PKH scriptSig to extract the sighash flag byte.
+func extractSighashByte(scriptSig script.Script) (byte, error) {
+	if len(scriptSig) < 2 {
+		return 0, fmt.Errorf("scriptSig too short (%d bytes)", len(scriptSig))
+	}
+	sigPushLen := int(scriptSig[0])
+	if sigPushLen < 1 || sigPushLen > 75 {
+		return 0, fmt.Errorf("unexpected signature push opcode: 0x%02X", scriptSig[0])
+	}
+	if len(scriptSig) < 1+sigPushLen {
+		return 0, fmt.Errorf("scriptSig truncated")
+	}
+	return scriptSig[sigPushLen], nil
 }
 
 // wocUnspentItem matches the WoC /address/{addr}/unspent JSON response.
@@ -68,7 +205,9 @@ type wocUnspentItem struct {
 // fetchWoCUnspentItems queries a WoC-compatible API for all unspent UTXOs at
 // the given address and returns the raw items with full details.
 func fetchWoCUnspentItems(address string, baseURL string) ([]wocUnspentItem, error) {
-	url := baseURL + "/address/" + address + "/unspent"
+	// Use the correct /confirmed/unspent endpoint.
+	// The old /address/{addr}/unspent was deprecated and returns 404 or partial data.
+	url := baseURL + "/address/" + address + "/confirmed/unspent"
 
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Get(url)
@@ -82,7 +221,7 @@ func fetchWoCUnspentItems(address string, baseURL string) ([]wocUnspentItem, err
 		return nil, fmt.Errorf("read body: %w", err)
 	}
 
-	// WoC returns 404 for addresses with no history
+	// WoC returns 404 for addresses with no history — legitimate empty set
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, nil
 	}
@@ -90,9 +229,21 @@ func fetchWoCUnspentItems(address string, baseURL string) ([]wocUnspentItem, err
 		return nil, fmt.Errorf("WoC returned HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
+	// The /confirmed/unspent endpoint returns an envelope:
+	// {"address":"...","script":"...","result":[{...},...]}
+	type envelope struct {
+		Address string           `json:"address"`
+		Result  []wocUnspentItem `json:"result"`
+	}
+	var env envelope
+	if err := json.Unmarshal(body, &env); err == nil && env.Address != "" {
+		return env.Result, nil
+	}
+
+	// Fallback: try plain array format
 	var items []wocUnspentItem
 	if err := json.Unmarshal(body, &items); err != nil {
-		return nil, fmt.Errorf("parse WoC response: %w", err)
+		return nil, fmt.Errorf("parse WoC response: %w (body: %.200s)", err, string(body))
 	}
 	return items, nil
 }
@@ -110,271 +261,6 @@ func fetchWoCUnspentSet(address string, baseURL string) (map[string]bool, error)
 		set[fmt.Sprintf("%s:%d", item.TxHash, item.TxPos)] = true
 	}
 	return set, nil
-}
-
-// --- Event bus and SSE (for dashboard) ---
-
-// EventType classifies gateway events for the SSE stream.
-type EventType string
-
-const (
-	EventChallengeIssued EventType = "challenge_issued"
-	EventPaymentAccepted EventType = "payment_accepted"
-	EventPaymentRejected EventType = "payment_rejected"
-	EventHTTPRequest     EventType = "http_request"
-)
-
-// Event represents a single gateway event sent to dashboard subscribers.
-type Event struct {
-	Type       EventType         `json:"-"`
-	Path       string            `json:"path"`
-	Method     string            `json:"method"`
-	Status     int               `json:"status"`
-	DurationMS int64             `json:"duration_ms"`
-	Timestamp  time.Time         `json:"timestamp"`
-	Details    map[string]string `json:"details,omitempty"`
-}
-
-// EventBus broadcasts events to all SSE subscribers.
-type EventBus struct {
-	mu          sync.RWMutex
-	subscribers map[chan Event]struct{}
-}
-
-// NewEventBus creates a new event bus.
-func NewEventBus() *EventBus {
-	return &EventBus{
-		subscribers: make(map[chan Event]struct{}),
-	}
-}
-
-// Subscribe registers a new SSE client and returns its channel.
-func (eb *EventBus) Subscribe() chan Event {
-	ch := make(chan Event, 32)
-	eb.mu.Lock()
-	eb.subscribers[ch] = struct{}{}
-	eb.mu.Unlock()
-	return ch
-}
-
-// Unsubscribe removes a client's channel and closes it.
-func (eb *EventBus) Unsubscribe(ch chan Event) {
-	eb.mu.Lock()
-	delete(eb.subscribers, ch)
-	eb.mu.Unlock()
-	close(ch)
-}
-
-// Emit broadcasts an event to all subscribers. Non-blocking — drops events for slow clients.
-func (eb *EventBus) Emit(e Event) {
-	eb.mu.RLock()
-	defer eb.mu.RUnlock()
-	for ch := range eb.subscribers {
-		select {
-		case ch <- e:
-		default:
-		}
-	}
-}
-
-// handleEvents returns an HTTP handler for the SSE /demo/events and /api/v1/events/stream endpoints.
-func handleEvents(eventBus *EventBus) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		flusher, ok := w.(http.Flusher)
-		if !ok {
-			http.Error(w, "SSE not supported", http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-		ch := eventBus.Subscribe()
-		defer eventBus.Unsubscribe(ch)
-		fmt.Fprintf(w, "event: connected\ndata: {\"status\":\"connected\"}\n\n")
-		flusher.Flush()
-		ctx := r.Context()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case event, ok := <-ch:
-				if !ok {
-					return
-				}
-				data, _ := json.Marshal(event)
-				fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.Type, data)
-				flusher.Flush()
-			}
-		}
-	}
-}
-
-func eventTypeFromStatus(status int, path string) EventType {
-	switch {
-	case status == 402:
-		return EventChallengeIssued
-	case status == 200 && strings.HasPrefix(path, "/v1/"):
-		return EventPaymentAccepted
-	case status >= 400 && strings.HasPrefix(path, "/v1/"):
-		return EventPaymentRejected
-	default:
-		return EventHTTPRequest
-	}
-}
-
-func eventDetailsFromHeaders(rw *responseWriter, r *http.Request) map[string]string {
-	details := make(map[string]string)
-	if receipt := rw.Header().Get("X402-Receipt"); receipt != "" {
-		details["receipt"] = truncateStr(receipt, 16)
-	}
-	if rw.Header().Get("X402-Challenge") != "" {
-		details["has_challenge"] = "true"
-	}
-	if r.Header.Get("X402-Proof") != "" {
-		details["has_proof"] = "true"
-	}
-	return details
-}
-
-func truncateStr(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
-}
-
-// --- Demo pool seeding and legacy Redis keys ---
-
-// templateOpts holds optional Profile B template generation parameters.
-type templateOpts struct {
-	enabled               bool
-	nonceKey              *ec.PrivateKey
-	payeeLockingScriptHex string
-	priceSats             uint64
-}
-
-// seedDemoPools populates nonce, fee, and payment pools with synthetic UTXOs for demo mode.
-func seedDemoPools(noncePool, feePool, paymentPool pool.Pool, count int, feeRate float64, feeUTXOSats uint64, tmpl templateOpts, logger *slog.Logger) {
-	nonceScript, err := noncePool.LockingScriptHex()
-	if err != nil {
-		logger.Error("demo seed: failed to get nonce locking script", "error", err)
-		return
-	}
-	nonceUTXOs := make([]pool.UTXO, count)
-	for i := 0; i < count; i++ {
-		nonceUTXOs[i] = pool.UTXO{
-			TxID:       syntheticTxID(i),
-			Vout:       0,
-			Script:     nonceScript,
-			Satoshis:   1,
-			Synthetic:  true,
-			OriginMode: "mock",
-		}
-	}
-	if tmpl.enabled && tmpl.nonceKey != nil {
-		if err := treasury.GenerateTemplates(tmpl.nonceKey, nonceUTXOs, tmpl.payeeLockingScriptHex, tmpl.priceSats); err != nil {
-			logger.Error("demo seed: failed to generate templates", "error", err)
-			return
-		}
-		logger.Info("demo seed: generated templates for nonce UTXOs", "count", count, "price_sats", tmpl.priceSats)
-	}
-	noncePool.AddExisting(nonceUTXOs)
-
-	feeScript, err := feePool.LockingScriptHex()
-	if err != nil {
-		logger.Error("demo seed: failed to get fee locking script", "error", err)
-		return
-	}
-	feeUTXOs := make([]pool.UTXO, count)
-	for i := 0; i < count; i++ {
-		feeUTXOs[i] = pool.UTXO{
-			TxID:       syntheticTxID(count + i),
-			Vout:       0,
-			Script:     feeScript,
-			Satoshis:   feeUTXOSats,
-			Synthetic:  true,
-			OriginMode: "mock",
-		}
-	}
-	feePool.AddExisting(feeUTXOs)
-
-	paymentScript, err := paymentPool.LockingScriptHex()
-	if err != nil {
-		logger.Error("demo seed: failed to get payment locking script", "error", err)
-		return
-	}
-	paymentUTXOs := make([]pool.UTXO, count)
-	for i := 0; i < count; i++ {
-		paymentUTXOs[i] = pool.UTXO{
-			TxID:       syntheticTxID(2*count + i),
-			Vout:       0,
-			Script:     paymentScript,
-			Satoshis:   100,
-			Synthetic:  true,
-			OriginMode: "mock",
-		}
-	}
-	paymentPool.AddExisting(paymentUTXOs)
-	logger.Info("demo mode: pools seeded", "nonce_utxos", count, "fee_utxos", count, "payment_utxos", count, "fee_sats", feeUTXOSats, "fee_rate", feeRate)
-}
-
-func syntheticTxID(index int) string {
-	b := make([]byte, 32)
-	rand.Read(b)
-	b[0] = byte(index >> 24)
-	b[1] = byte(index >> 16)
-	b[2] = byte(index >> 8)
-	b[3] = byte(index)
-	return hex.EncodeToString(b)
-}
-
-// detectLegacyKeys checks for un-namespaced Redis keys and logs a warning if found.
-func detectLegacyKeys(rdb *redis.Client, logger *slog.Logger) {
-	if rdb == nil {
-		return
-	}
-	ctx := context.Background()
-	for _, prefix := range []string{"nonce:", "fee:", "payment:"} {
-		count, _ := rdb.ZCard(ctx, prefix+"available").Result()
-		spent, _ := rdb.SCard(ctx, prefix+"spent").Result()
-		if count > 0 || spent > 0 {
-			logger.Warn("legacy un-namespaced Redis keys detected",
-				"prefix", prefix, "available", count, "spent", spent,
-				"action", "data now lives under <mode>:<pool>: namespace")
-		}
-	}
-}
-
-// handleDashboardSPA serves the React SPA. Static files from embedded FS;
-// all other paths fall back to index.html for client-side routing.
-func handleDashboardSPA() http.HandlerFunc {
-	sub, err := fs.Sub(staticFS, "static")
-	if err != nil {
-		panic("failed to create sub-filesystem for static: " + err.Error())
-	}
-	fileServer := http.FileServer(http.FS(sub))
-	return func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Path
-		if strings.HasPrefix(path, "/api/") ||
-			strings.HasPrefix(path, "/health") ||
-			strings.HasPrefix(path, "/nonce/") ||
-			strings.HasPrefix(path, "/delegate/") ||
-			strings.HasPrefix(path, "/v1/") ||
-			strings.HasPrefix(path, "/demo/") {
-			http.NotFound(w, r)
-			return
-		}
-		cleanPath := strings.TrimPrefix(path, "/")
-		if cleanPath == "" {
-			cleanPath = "index.html"
-		}
-		if _, err := fs.Stat(sub, cleanPath); err == nil {
-			fileServer.ServeHTTP(w, r)
-			return
-		}
-		r.URL.Path = "/"
-		fileServer.ServeHTTP(w, r)
-	}
 }
 
 func main() {
@@ -874,35 +760,11 @@ func main() {
 	})
 
 	// Embedded delegator routes (only when DELEGATOR_EMBEDDED=true)
+	// Uses the same { partial_tx } → { completed_tx, txid } API as the
+	// standalone delegator (cmd/delegator), parsing and inferring all
+	// required parameters from the transaction itself.
 	if cfg.DelegatorEmbedded && deleg != nil {
-		mux.HandleFunc("POST /delegate/x402", func(w http.ResponseWriter, r *http.Request) {
-			var req delegator.DelegationRequest
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]any{
-					"error": "invalid request body: " + err.Error(),
-				})
-				return
-			}
-
-			// Enrich request with server-side data
-			if req.ExpectedPayeeLockingScriptHex == "" {
-				req.ExpectedPayeeLockingScriptHex = payeeLockingScriptHex
-			}
-
-			result, err := deleg.Accept(req)
-			if err != nil {
-				if delegErr, ok := err.(*delegator.DelegationError); ok {
-					writeJSON(w, delegErr.Status, delegErr)
-					return
-				}
-				writeJSON(w, http.StatusInternalServerError, map[string]any{
-					"error": err.Error(),
-				})
-				return
-			}
-
-			writeJSON(w, http.StatusOK, result)
-		})
+		mux.HandleFunc("POST /delegate/x402", handleEmbeddedDelegateX402(deleg, payeeLockingScriptHex))
 	}
 
 	// --- Protected endpoint (gated by x402 middleware) ---
@@ -950,8 +812,35 @@ func main() {
 	// SSE event stream (backward-compat alias)
 	mux.HandleFunc("GET /demo/events", handleEvents(eventBus))
 
+	// --- Developer Playground reverse proxy ---
+	if cfg.PlaygroundURL != "" {
+		playgroundTarget, err := url.Parse(cfg.PlaygroundURL)
+		if err != nil {
+			logger.Error("invalid PLAYGROUND_URL", "error", err)
+			os.Exit(1)
+		}
+		playgroundProxy := httputil.NewSingleHostReverseProxy(playgroundTarget)
+		mux.HandleFunc("GET /playground/", func(w http.ResponseWriter, r *http.Request) {
+			r.URL.Path = strings.TrimPrefix(r.URL.Path, "/playground")
+			if r.URL.Path == "" {
+				r.URL.Path = "/"
+			}
+			r.Host = playgroundTarget.Host
+			playgroundProxy.ServeHTTP(w, r)
+		})
+		logger.Info("playground proxy enabled", "target", cfg.PlaygroundURL)
+	}
+
 	// --- React Dashboard SPA ---
-	mux.HandleFunc("GET /", handleDashboardSPA())
+	// Use method-less pattern so it doesn't conflict with /playground/ catch-all.
+	// The SPA handler only serves on GET anyway (returns 405 for other methods).
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		handleDashboardSPA().ServeHTTP(w, r)
+	})
 
 	// Start server
 	addr := fmt.Sprintf(":%d", cfg.Port)
@@ -1029,6 +918,9 @@ func main() {
 	fmt.Printf("    GET  /api/v1/config   Dashboard config\n")
 	fmt.Printf("    GET  /api/v1/stats/*  Dashboard analytics\n")
 	fmt.Printf("    GET  /api/v1/treasury/* Treasury mgmt\n")
+	if cfg.PlaygroundURL != "" {
+		fmt.Printf("    GET  /playground/*    Developer Playground (proxy)\n")
+	}
 	fmt.Printf("    GET  /                Dashboard (React SPA)\n")
 	fmt.Printf("\n")
 
