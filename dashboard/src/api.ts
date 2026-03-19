@@ -126,12 +126,13 @@ export function decodeChallenge(encoded: string): ChallengeData {
 }
 
 // Call the delegator to complete a partial transaction (add fee inputs).
-// POST /delegate/x402 → { completed_tx, txid }
+// Proxied through the gateway at /api/v1/delegate to avoid CORS / mixed-content
+// issues when the delegator runs on a different port or host.
 export async function delegateTransaction(
-  delegatorUrl: string,
+  _delegatorUrl: string,
   partialTxHex: string
 ): Promise<{ completed_tx: string; txid: string }> {
-  const res = await fetch(`${delegatorUrl}/delegate/x402`, {
+  const res = await fetch('/api/v1/delegate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ partial_tx: partialTxHex }),

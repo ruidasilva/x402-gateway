@@ -45,6 +45,16 @@ export default function Layout({ activeTab, onTabChange, connected, children }: 
             </button>
           ))}
         </nav>
+        <a
+          href="/playground/"
+          className="nav-item playground-link"
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ textDecoration: 'none', color: 'inherit', marginTop: 'auto' }}
+        >
+          <span>{'\u{1F6E0}\uFE0F'}</span>
+          Developer Playground
+        </a>
         <div className="connection-status">
           <span className={`status-dot ${connected ? 'connected' : 'disconnected'}`} />
           {connected ? 'Connected' : 'Disconnected'}

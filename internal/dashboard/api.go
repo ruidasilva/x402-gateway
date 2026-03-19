@@ -98,6 +98,9 @@ func (d *DashboardAPI) RegisterRoutes(mux *http.ServeMux) {
 	// Broadcast endpoint (proxies to configured broadcaster for dashboard testing)
 	mux.HandleFunc("POST /api/v1/broadcast", d.handleBroadcast())
 
+	// Delegate proxy (proxies to delegator for dashboard testing — avoids CORS)
+	mux.HandleFunc("POST /api/v1/delegate", d.handleDelegateProxy())
+
 	// Pool reconciliation (checks UTXOs against blockchain, marks zombies as spent)
 	mux.HandleFunc("POST /api/v1/pools/reconcile", d.handleReconcilePools())
 
