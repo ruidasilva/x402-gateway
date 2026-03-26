@@ -1,113 +1,249 @@
-# x402 Settlement Gateway
+# x402 — Stateless settlement-gated HTTP protocol
 
-[![CI](https://github.com/merkleworks/x402-bsv/actions/workflows/ci.yml/badge.svg)](https://github.com/merkleworks/x402-bsv/actions/workflows/ci.yml)
+x402 uses HTTP 402 to require verifiable economic settlement before executing a request. Payment replaces identity: no accounts, no API keys, no subscriptions. The server issues a challenge, the client settles on-chain, and the proof unlocks the resource.
 
-## Protocol Status
+This repository is the **reference implementation** of the x402 protocol (v1.0, frozen). It enforces stateless verification, deterministic request binding, and on-chain settlement gating. The implementation has been validated through strict conformance audit, adversarial execution testing, and cross-language vector verification.
 
 | | |
 |---|---|
-| **x402 Protocol** | v1.0-spec (Frozen) |
-| **Specification Repository** | https://github.com/ruidasilva/merkleworks-x402-spec |
-| **Reference Implementation** | this repository |
+| **Protocol specification** | [merkleworks-x402-spec](https://github.com/ruidasilva/merkleworks-x402-spec) (authoritative) |
+| **Reference implementation** | this repository |
+| **Spec version** | 1.0 (frozen) |
 
-The x402 protocol defines a stateless settlement-gated HTTP authorization model where request execution is conditioned on verifiable economic settlement. The canonical protocol specification is maintained separately in the [merkleworks-x402-spec](https://github.com/ruidasilva/merkleworks-x402-spec) repository.
+When implementation behavior diverges from the specification, the specification prevails.
 
-This repository provides the reference gateway implementation. When implementation behavior diverges from the specification, the specification prevails.
+### Interoperability
 
-## Overview
+x402 interoperability is defined by canonical test vectors. Independent implementations MUST reproduce these vectors byte-for-byte. Deviation indicates non-compliance with x402 v1.0.
 
-The gateway implements settlement-gated HTTP execution using the x402 protocol:
+- [VECTORS.md](VECTORS.md) -- normative specification of the test vectors
+- [testdata/x402-vectors-v1.json](testdata/x402-vectors-v1.json) -- the canonical vector file
+- [testdata/verify_vectors.py](testdata/verify_vectors.py) -- reference verifier (Python, zero dependencies)
 
-- **HTTP 402 challenge-proof-retry flow** for protected endpoints
-- **Nonce-UTXO issuance** for replay-safe payment challenges
-- **Deterministic request binding** using canonical hashing
-- **Fee delegation** — delegator adds miner-fee inputs and signs only its own inputs
-- **Stateless proof verification** before endpoint execution
-- **Configurable acceptance semantics** (mempool visibility or confirmation depth)
-- **Operational monitoring** via React dashboard
+---
 
-Replay protection is enforced by UTXO single-use at the network layer. Correctness does not depend on nonce databases, account ledgers, or balance tracking.
+## Start here
 
-## Quick Start
+### 1. Run the system
 
 ```bash
-# 1. Generate keys
-make setup
+# Docker (production-like: gateway + delegator + Redis)
+docker compose up --build
 
-# 2. Start in demo mode (in-memory, mock broadcaster)
+# Or local demo (in-memory, mock broadcaster, no Docker required)
 make demo
-
-# 3. Test the settlement flow (in another terminal)
-make client
-
-# 4. Open dashboard
-open http://localhost:8402
 ```
 
-For production deployment with Docker and Redis, see [Deployment](docs/deployment.md).
+### 2. Verify it works
 
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                   x402 Settlement Gateway                    │
-├─────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    │
-│  │  Gatekeeper │    │  Delegator  │    │  Dashboard  │    │
-│  │  (402 flow) │    │ (fee-only)  │    │  (React UI) │    │
-│  └──────┬──────┘    └──────┬──────┘    └──────┬──────┘    │
-│         │                  │                  │            │
-│  ┌──────┴──────────────────┴──────────────────┴──────┐    │
-│  │              UTXO Pools (Nonce / Fee)              │    │
-│  └───────────────────────┬────────────────────────────┘    │
-│              ┌────────────┴────────────┐                   │
-│              │    Redis / In-Memory    │                   │
-│              └─────────────────────────┘                   │
-└─────────────────────────────────────────────────────────────┘
+```bash
+curl -i http://localhost:8402/v1/expensive
 ```
 
-The **Gatekeeper** issues 402 challenges and verifies proofs. The **Delegator** adds fee inputs and signs only those — it never holds client keys or broadcasts. The **Client** constructs, signs, and broadcasts the settlement transaction.
+Expected response:
 
-Full architecture details, settlement flow diagrams, and key concepts: [Architecture](docs/architecture.md)
-
-## Client Library
-
-The [`@merkleworks/x402-client`](client-js/) package provides a drop-in `fetch()` replacement that transparently handles 402 payment challenges. No wallet or balance tracking required.
-
-```typescript
-import { X402Client } from "@merkleworks/x402-client"
-
-const client = new X402Client({
-  delegatorUrl: "https://demo.x402.merkleworks.io",
-})
-
-const res = await client.fetch("https://demo.x402.merkleworks.io/v1/expensive")
+```
+HTTP/1.1 402 Payment Required
+X402-Challenge: eyJhbW91bnRfc2F0cyI6MTAwLC...
+X402-Accept: bsv-tx-v1
 ```
 
-See the [client README](client-js/README.md) for install, configuration, protocol profiles, error handling, and advanced usage.
+The `X402-Challenge` header contains a base64url-encoded JSON challenge object. The server requires 100 satoshis to unlock `/v1/expensive`.
+
+### 3. Run the full protocol flow
+
+Open the Developer Playground at `http://localhost:8402` and click **Run Full Flow**. The playground executes all six protocol steps:
+
+1. Requests the protected resource (receives 402 + challenge)
+2. Decodes the challenge and extracts the nonce UTXO
+3. Calls the delegator to construct and sign the settlement transaction
+4. Broadcasts the transaction to the BSV network
+5. Builds the proof (binds the transaction to the original request)
+6. Retries the request with the `X402-Proof` header
+
+Expected final result: **HTTP 200 OK** with the protected resource.
+
+---
+
+## Protocol flow
+
+```
+Client                          Server
+  |                               |
+  |  GET /v1/expensive            |
+  |------------------------------>|
+  |                               |
+  |  402 + X402-Challenge         |
+  |<------------------------------|
+  |                               |
+  |  [construct tx, sign, broadcast, build proof]
+  |                               |
+  |  GET /v1/expensive            |
+  |  X402-Proof: <base64url>      |
+  |------------------------------>|
+  |                               |
+  |  200 OK                       |
+  |<------------------------------|
+```
+
+1. **Request** -- Client requests a protected resource.
+2. **Challenge** -- Server responds with 402 and an `X402-Challenge` header containing the payment terms: amount, payee script, nonce UTXO, request binding hashes, and expiry.
+3. **Settlement** -- Client constructs a BSV transaction spending the nonce UTXO and paying the required amount to the payee.
+4. **Delegation** (optional) -- A fee delegator adds miner-fee inputs and signs only its own inputs.
+5. **Broadcast** -- Client broadcasts the transaction to the BSV network.
+6. **Proof** -- Client retries the request with an `X402-Proof` header containing the transaction, request binding, and challenge reference. Server verifies statelessly and serves the resource.
+
+The server does not trust the client. All verification is performed independently from the proof and on-chain data.
+
+---
+
+## Key properties
+
+- **Stateless verification** -- The server verifies each proof independently. No sessions, no client state, no nonce databases. Correctness derives from on-chain settlement, not server-side tracking.
+- **Deterministic request binding** -- Each proof is cryptographically bound to the exact HTTP method, path, query string, body hash, and header hash. A proof for one request cannot unlock a different request.
+- **UTXO nonce model** -- Each challenge references a specific nonce UTXO. The payment transaction must spend that UTXO. Bitcoin consensus guarantees single-spend, providing replay protection without persistent state.
+- **Mempool-gated execution** -- When `require_mempool_accept` is true (default), the server verifies mempool acceptance before serving the resource. No execution occurs on pending or failed transactions.
+- **Client-broadcast model** -- The client MUST broadcast the settlement transaction. The server and delegator never broadcast.
+- **Ordered verification** -- The server follows a strict verification sequence (spec Section 7): decode proof, validate challenge hash, verify request binding, check expiry, decode transaction, verify nonce spend, verify payment output, check mempool acceptance.
+
+---
+
+## Test vectors
+
+The file `testdata/x402-vectors-v1.json` contains 9 canonical test vectors. These vectors are normative -- they define the interoperability contract for x402 v1.0. All base64 encodings use base64url (RFC 4648, no padding). See [VECTORS.md](VECTORS.md) for the full specification.
+
+Verify with Go:
+
+```bash
+go test ./internal/challenge/ -run TestVectors -v
+```
+
+Verify with Python (zero dependencies):
+
+```bash
+python3 testdata/verify_vectors.py
+```
+
+Expected: `VERDICT: PASS -- all 25 checks passed`
+
+---
+
+## Repository structure
+
+```
+internal/gatekeeper/     Middleware: challenge issuance, proof verification, replay protection
+internal/challenge/      Challenge struct, canonical JSON (RFC 8785), hashing, binding verification
+internal/feedelegator/   Fee delegation: adds miner-fee inputs, signs only its own inputs
+internal/pool/           UTXO pool management (nonce, fee, payment) — Redis or in-memory
+internal/replay/         LRU replay detection cache (defence-in-depth, not a correctness gate)
+internal/broadcast/      BSV transaction broadcasting (GorillaPool ARC, WhatsOnChain, mock)
+
+cmd/server/              Gateway server (HTTP, middleware, dashboard, embedded delegator)
+cmd/client/              CLI client (full 402 flow: challenge → tx → delegate → broadcast → proof)
+cmd/vecgen/              Canonical test vector generator
+
+client-js/               TypeScript client library (@merkleworks/x402-client)
+dashboard/               React developer playground and monitoring dashboard
+
+testdata/                Canonical test vectors, Python verifier, documentation
+postman/                 Postman collections for manual protocol testing
+```
+
+### Test suites
+
+| Suite | Location | Purpose |
+|---|---|---|
+| Canonical JSON + vectors | `internal/challenge/*_test.go` | RFC 8785 compliance, golden hash, vector consumption |
+| Middleware + verification | `internal/gatekeeper/middleware_test.go` | Replay rejection, tampered output/script detection |
+| Adversarial | `internal/gatekeeper/adversarial_test.go` | Binding replay, concurrent duplicate, mempool edge cases |
+| E2E protocol flow | `internal/gatekeeper/e2e_test.go` | Full 7-step flow, challenge round-trip, proof round-trip |
+| Proof parsing | `internal/gatekeeper/proof_test.go` | Format validation, required fields, status code mapping |
+| Cross-language | `testdata/verify_vectors.py` | Independent Python verification of all vectors |
+
+Run all protocol tests:
+
+```bash
+go test ./internal/challenge/ ./internal/gatekeeper/ ./internal/replay/ -v
+```
+
+---
+
+## Configuration
+
+```bash
+cp .env.example .env
+# Edit .env — see comments for all options
+```
+
+Key variables:
+
+| Variable | Required | Description |
+|---|---|---|
+| `XPRIV` | yes | BIP32 extended private key (HD wallet) |
+| `BROADCASTER` | yes | `mock` (demo), `woc` (WhatsOnChain), `composite` (GorillaPool + WoC) |
+| `FEE_RATE` | yes | Fee rate in sat/byte (BSV standard: `0.001`) |
+| `BSV_NETWORK` | no | `mainnet` or `testnet` (default: `testnet`) |
+| `PORT` | no | HTTP port (default: `8402`) |
+| `REDIS_ENABLED` | no | `true` for persistent UTXO pools (default: `false`) |
+
+Full configuration reference: [docs/configuration.md](docs/configuration.md)
+
+---
+
+## Development
+
+### Prerequisites
+
+- Go 1.22+
+- Node.js 18+ (for dashboard build)
+- Redis 7+ (optional, for persistent pools)
+
+### Build and test
+
+```bash
+make build          # Build server + client binaries
+make test           # Run all tests
+make demo           # Start in demo mode (mock broadcaster, in-memory pools)
+make client         # Run CLI client against local server
+```
+
+### Protocol constraints
+
+The x402 protocol specification (v1.0) is frozen. Changes to this implementation must preserve:
+
+- Canonical JSON encoding (RFC 8785 sorted keys, no whitespace, integer numbers)
+- Test vector compatibility (`testdata/x402-vectors-v1.json` must not change)
+- Verification order (invariant V-1: decode, challenge hash, binding, expiry, tx, nonce, payee, mempool)
+- Stateless correctness (no persistent state required for verification)
+- Replay protection via settlement-layer nonce spend (not server-side tracking)
+
+If a change alters canonical encoding or verification behavior, it must be accompanied by updated test vectors and cross-language verification.
+
+---
 
 ## Documentation
 
 | Document | Description |
-|----------|-------------|
-| [Architecture](docs/architecture.md) | Components, settlement flow, key concepts, project structure |
+|---|---|
+| [Architecture](docs/architecture.md) | Components, settlement flow, key concepts |
 | [Configuration](docs/configuration.md) | Environment variables and `.env` setup |
-| [API Reference](docs/api-reference.md) | All endpoints, headers, request/response formats |
-| [Deployment](docs/deployment.md) | Demo, Docker, production checklist, security |
-| [Testing](docs/testing/README.md) | Unit tests, Postman collections, adversarial harness |
+| [API Reference](docs/api-reference.md) | Endpoints, headers, request/response formats |
+| [Deployment](docs/deployment.md) | Demo, Docker, production checklist |
+| [Testing](docs/testing/README.md) | Test suites, Postman collections |
 | [Troubleshooting](docs/troubleshooting.md) | Common issues and fixes |
 
-### Protocol & Governance
+### Protocol and governance
 
 | Document | Description |
-|----------|-------------|
+|---|---|
 | [Protocol](PROTOCOL.md) | Specification hierarchy and protocol overview |
 | [Governance](GOVERNANCE.md) | Authority model and contribution policy |
-| [Code of Conduct](CODE_OF_CONDUCT.md) | Contributor Covenant v2.1 |
 | [Contributing](CONTRIBUTING.md) | Development setup and PR process |
-| [Security](SECURITY.md) | Vulnerability reporting policy |
+| [Security](SECURITY.md) | Vulnerability reporting |
 | [Changelog](CHANGELOG.md) | Release history |
+
+---
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE).
+Apache License 2.0 -- see [LICENSE](LICENSE).
