@@ -44,7 +44,7 @@ func TestBuildAndHash(t *testing.T) {
 		t.Errorf("scheme: got %s, want %s", ch.Scheme, Scheme)
 	}
 	if ch.V != Version {
-		t.Errorf("v: got %s, want %s", ch.V, Version)
+		t.Errorf("v: got %d, want %d", ch.V, Version)
 	}
 	if ch.AmountSats != 100 {
 		t.Errorf("amount_sats: got %d, want 100", ch.AmountSats)
@@ -58,10 +58,6 @@ func TestBuildAndHash(t *testing.T) {
 	if !ch.RequireMempoolAccept {
 		t.Error("require_mempool_accept should be true")
 	}
-	if ch.ConfirmationsRequired != 0 {
-		t.Errorf("confirmations_required: got %d, want 0", ch.ConfirmationsRequired)
-	}
-
 	// Verify nonce UTXO is set
 	if ch.NonceUTXO == nil {
 		t.Fatal("nonce_utxo should be set")
@@ -194,7 +190,7 @@ func TestValidateSchemeVersion(t *testing.T) {
 		t.Errorf("expected nil error, got: %v", err)
 	}
 
-	bad := &Challenge{V: "99", Scheme: Scheme}
+	bad := &Challenge{V: 99, Scheme: Scheme}
 	if err := ValidateSchemeVersion(bad); err == nil {
 		t.Error("expected error for wrong version")
 	}

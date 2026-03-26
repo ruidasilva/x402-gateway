@@ -174,7 +174,7 @@ func main() {
 	}
 
 	fmt.Printf("  Challenge:\n")
-	fmt.Printf("    Scheme:   %s v%s\n", ch.Scheme, ch.V)
+	fmt.Printf("    Scheme:   %s v%d\n", ch.Scheme, ch.V)
 	fmt.Printf("    Payee:    %s\n", truncate(ch.PayeeLockingScriptHex, 40))
 	fmt.Printf("    Amount:   %d sats\n", ch.AmountSats)
 	fmt.Printf("    Hash:     %s\n", truncate(challengeHash, 24))
@@ -322,11 +322,12 @@ func main() {
 	proof := &gatekeeper.Proof{
 		V:               challenge.Version,
 		Scheme:          challenge.Scheme,
-		TxID:            delegResult.TxID,
-		RawTxB64:        rawTxB64,
 		ChallengeSHA256: challengeHash,
+		Payment: gatekeeper.Payment{
+			TxID:     delegResult.TxID,
+			RawTxB64: rawTxB64,
+		},
 		Request: gatekeeper.RequestBinding{
-			Domain:           targetParsed.Host,
 			Method:           httpMethod,
 			Path:             targetParsed.Path,
 			Query:            targetParsed.RawQuery,

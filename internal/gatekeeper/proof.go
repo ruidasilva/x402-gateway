@@ -5,7 +5,6 @@
 // You may obtain a copy of the License at
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
-//
 
 
 package gatekeeper
@@ -42,18 +41,23 @@ func ParseProof(header string) (*Proof, error) {
 		return nil, fmt.Errorf("json unmarshal: %w", err)
 	}
 
-	// Validate required fields
-	if p.RawTxB64 == "" {
-		return nil, fmt.Errorf("missing rawtx_b64 field")
+	// Validate required fields per spec §5.
+	// Per spec: "The server MUST reject proofs whose v value it does not support."
+	// A missing or zero v is not a supported version — reject, do not default.
+	if p.V == 0 {
+		return nil, fmt.Errorf("missing or zero v field")
+	}
+	if p.Scheme == "" {
+		return nil, fmt.Errorf("missing scheme field")
+	}
+	if p.Payment.RawTxB64 == "" {
+		return nil, fmt.Errorf("missing payment.rawtx_b64 field")
+	}
+	if p.Payment.TxID == "" {
+		return nil, fmt.Errorf("missing payment.txid field")
 	}
 	if p.ChallengeSHA256 == "" {
 		return nil, fmt.Errorf("missing challenge_sha256 field")
-	}
-	if p.V == "" {
-		p.V = "1" // default
-	}
-	if p.Scheme == "" {
-		p.Scheme = "bsv-tx-v1" // default
 	}
 
 	return &p, nil

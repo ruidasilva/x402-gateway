@@ -41,8 +41,12 @@
 						"header": [],
 						"url": {
 							"raw": "{{gatewayUrl}}/health",
-							"host": ["{{gatewayUrl}}"],
-							"path": ["health"]
+							"host": [
+								"{{gatewayUrl}}"
+							],
+							"path": [
+								"health"
+							]
 						},
 						"description": "Returns gateway health status including pool statistics, network, profile mode, and version."
 					},
@@ -83,8 +87,12 @@
 						"header": [],
 						"url": {
 							"raw": "{{delegatorUrl}}/health",
-							"host": ["{{delegatorUrl}}"],
-							"path": ["health"]
+							"host": [
+								"{{delegatorUrl}}"
+							],
+							"path": [
+								"health"
+							]
 						},
 						"description": "Returns delegator health status including uptime and pool information."
 					},
@@ -118,8 +126,13 @@
 						"header": [],
 						"url": {
 							"raw": "{{gatewayUrl}}/v1/expensive",
-							"host": ["{{gatewayUrl}}"],
-							"path": ["v1", "expensive"]
+							"host": [
+								"{{gatewayUrl}}"
+							],
+							"path": [
+								"v1",
+								"expensive"
+							]
 						},
 						"description": "Request the protected resource without payment.\n\nThe gateway responds with:\n- HTTP 402 Payment Required\n- X402-Challenge header (base64url-encoded JSON challenge)\n- X402-Accept header (supported payment schemes)\n\nThe test script extracts the challenge, decodes it, and stores it for subsequent steps."
 					},
@@ -231,8 +244,13 @@
 						},
 						"url": {
 							"raw": "{{delegatorUrl}}/delegate/x402",
-							"host": ["{{delegatorUrl}}"],
-							"path": ["delegate", "x402"]
+							"host": [
+								"{{delegatorUrl}}"
+							],
+							"path": [
+								"delegate",
+								"x402"
+							]
 						},
 						"description": "Send the template transaction from the challenge to the delegator.\n\nThe pre-request script:\n1. Decodes the challenge from Step 1 (base64url -> JSON)\n2. Extracts template.rawtx_hex and stores it as templateRawtxHex\n3. Stores all challenge binding fields for proof building in Step 4\n4. Computes the challenge SHA-256 hash for proof binding\n\nThe delegator:\n1. Parses the partial transaction\n2. Validates structure (nonce input, payee output)\n3. Adds fee inputs from its UTXO pool\n4. Signs the fee inputs\n5. Returns the completed transaction and txid"
 					},
@@ -341,8 +359,12 @@
 						"header": [],
 						"url": {
 							"raw": "{{gatewayUrl}}/health",
-							"host": ["{{gatewayUrl}}"],
-							"path": ["health"]
+							"host": [
+								"{{gatewayUrl}}"
+							],
+							"path": [
+								"health"
+							]
 						},
 						"description": "PLACEHOLDER: In production, the client broadcasts the completed_tx to the BSV network.\n\nIn demo mode (BROADCASTER=mock), this step is skipped because the mock broadcaster automatically accepts all transactions. The delegator already handled broadcast internally.\n\nThis request hits /health as a no-op to keep the step numbering consistent.\n\nFor production, broadcast options:\n\n  GorillaPool ARC (recommended primary):\n    POST https://arc.gorillapool.io/v1/tx\n    Content-Type: application/json\n    Body: {\"rawTx\": \"<completedTxHex>\"}\n    Note: ARC uses \"rawTx\" (not \"txhex\")\n\n  WhatsOnChain (fallback):\n    POST https://api.whatsonchain.com/v1/bsv/{network}/tx/raw\n    Content-Type: application/json\n    Body: {\"txhex\": \"<completedTxHex>\"}\n\nWhen using BROADCASTER=composite, the gateway proxies broadcast through GorillaPool ARC first with WoC fallback."
 					},
@@ -382,8 +404,13 @@
 						],
 						"url": {
 							"raw": "{{gatewayUrl}}/v1/expensive",
-							"host": ["{{gatewayUrl}}"],
-							"path": ["v1", "expensive"]
+							"host": [
+								"{{gatewayUrl}}"
+							],
+							"path": [
+								"v1",
+								"expensive"
+							]
 						},
 						"description": "Submit the payment proof to access the protected resource.\n\nThe pre-request script builds the X402-Proof header from:\n- completed_tx (hex -> base64 for rawtx_b64 field)\n- txid from the delegator response\n- challenge_sha256 computed from the original challenge JSON\n- Request binding fields from the original challenge\n\nThe proof is a base64url-encoded JSON object:\n{\n  \"v\": \"1\",\n  \"scheme\": \"bsv-tx-v1\",\n  \"txid\": \"<64-char hex>\",\n  \"rawtx_b64\": \"<base64 of completed tx bytes>\",\n  \"challenge_sha256\": \"<64-char hex>\",\n  \"request\": {\n    \"domain\": \"localhost:8402\",\n    \"method\": \"GET\",\n    \"path\": \"/v1/expensive\",\n    \"query\": \"\",\n    \"req_headers_sha256\": \"<hex>\",\n    \"req_body_sha256\": \"<hex>\"\n  }\n}"
 					},
@@ -435,10 +462,10 @@
 									"var rawtxB64 = hexToBase64(completedTxHex);",
 									"",
 									"var proof = {",
-									"    v: '1',",
+									"    v: 1,",
 									"    scheme: 'bsv-tx-v1',",
-									"    txid: txid,",
-									"    rawtx_b64: rawtxB64,",
+									"",
+									"",
 									"    challenge_sha256: challengeSha256,",
 									"    request: {",
 									"        domain: challengeDomain,",
@@ -518,8 +545,13 @@
 						"header": [],
 						"url": {
 							"raw": "{{gatewayUrl}}/v1/expensive",
-							"host": ["{{gatewayUrl}}"],
-							"path": ["v1", "expensive"]
+							"host": [
+								"{{gatewayUrl}}"
+							],
+							"path": [
+								"v1",
+								"expensive"
+							]
 						},
 						"description": "Step 1 of the automatic flow. Requests the protected resource without payment, extracts the 402 challenge, decodes it, and chains to the delegator call."
 					},
@@ -591,8 +623,13 @@
 						},
 						"url": {
 							"raw": "{{delegatorUrl}}/delegate/x402",
-							"host": ["{{delegatorUrl}}"],
-							"path": ["delegate", "x402"]
+							"host": [
+								"{{delegatorUrl}}"
+							],
+							"path": [
+								"delegate",
+								"x402"
+							]
 						},
 						"description": "Step 2 of the automatic flow. Sends the template transaction to the delegator for fee input addition and signing."
 					},
@@ -647,8 +684,13 @@
 						],
 						"url": {
 							"raw": "{{gatewayUrl}}/v1/expensive",
-							"host": ["{{gatewayUrl}}"],
-							"path": ["v1", "expensive"]
+							"host": [
+								"{{gatewayUrl}}"
+							],
+							"path": [
+								"v1",
+								"expensive"
+							]
 						},
 						"description": "Step 3 (final) of the automatic flow. Builds the X402-Proof header from stored variables and submits it to access the protected resource."
 					},
@@ -684,10 +726,10 @@
 									"",
 									"// Build proof object",
 									"var proof = {",
-									"    v: '1',",
+									"    v: 1,",
 									"    scheme: 'bsv-tx-v1',",
-									"    txid: txid,",
-									"    rawtx_b64: hexToBase64(completedTxHex),",
+									"",
+									"",
 									"    challenge_sha256: challengeSha256,",
 									"    request: {",
 									"        domain: pm.collectionVariables.get('challengeDomain'),",
@@ -760,8 +802,13 @@
 						},
 						"url": {
 							"raw": "{{delegatorUrl}}/delegate/x402",
-							"host": ["{{delegatorUrl}}"],
-							"path": ["delegate", "x402"]
+							"host": [
+								"{{delegatorUrl}}"
+							],
+							"path": [
+								"delegate",
+								"x402"
+							]
 						},
 						"description": "POST /delegate/x402 - Simplified x402 delegation endpoint.\n\nAccepts a partial transaction (the template from the gateway challenge), infers all parameters from the transaction structure (nonce outpoint, payee, amount, template mode), adds fee inputs, signs them, and returns the completed transaction.\n\nRequest: {\"partial_tx\": \"<hex>\"}\nResponse: {\"completed_tx\": \"<hex>\", \"txid\": \"<hex>\"}"
 					},
@@ -812,8 +859,14 @@
 						},
 						"url": {
 							"raw": "{{delegatorUrl}}/api/v1/tx",
-							"host": ["{{delegatorUrl}}"],
-							"path": ["api", "v1", "tx"]
+							"host": [
+								"{{delegatorUrl}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"tx"
+							]
 						},
 						"description": "POST /api/v1/tx - Fee delegator transaction submission API.\n\nSubmit a raw transaction for fee delegation. The delegator adds fee inputs from its fee UTXO pool, signs them, and returns the completed transaction.\n\nThis is the lower-level fee delegation API. For x402 protocol flow, use /delegate/x402 instead."
 					},
@@ -845,8 +898,14 @@
 						"header": [],
 						"url": {
 							"raw": "{{delegatorUrl}}/api/utxo/stats",
-							"host": ["{{delegatorUrl}}"],
-							"path": ["api", "utxo", "stats"]
+							"host": [
+								"{{delegatorUrl}}"
+							],
+							"path": [
+								"api",
+								"utxo",
+								"stats"
+							]
 						},
 						"description": "GET /api/utxo/stats - Returns fee UTXO pool statistics.\n\nShows total, available, leased, and consumed UTXO counts for the fee delegator pool."
 					},
@@ -878,8 +937,14 @@
 						"header": [],
 						"url": {
 							"raw": "{{delegatorUrl}}/api/utxo/health",
-							"host": ["{{delegatorUrl}}"],
-							"path": ["api", "utxo", "health"]
+							"host": [
+								"{{delegatorUrl}}"
+							],
+							"path": [
+								"api",
+								"utxo",
+								"health"
+							]
 						},
 						"description": "GET /api/utxo/health - Returns the health status of the fee UTXO pool.\n\nStatus values: healthy, degraded, or critical (based on available UTXO count thresholds)."
 					},
@@ -911,8 +976,13 @@
 						"header": [],
 						"url": {
 							"raw": "{{delegatorUrl}}/api/health",
-							"host": ["{{delegatorUrl}}"],
-							"path": ["api", "health"]
+							"host": [
+								"{{delegatorUrl}}"
+							],
+							"path": [
+								"api",
+								"health"
+							]
 						},
 						"description": "GET /api/health - Returns the overall API health of the fee delegator service including uptime."
 					},
@@ -950,8 +1020,14 @@
 						"header": [],
 						"url": {
 							"raw": "{{gatewayUrl}}/api/v1/config",
-							"host": ["{{gatewayUrl}}"],
-							"path": ["api", "v1", "config"]
+							"host": [
+								"{{gatewayUrl}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"config"
+							]
 						},
 						"description": "GET /api/v1/config - Returns the current gateway configuration.\n\nIncludes network, profile mode, pool sizes, pricing, addresses, broadcaster type, and feature flags."
 					},
@@ -982,8 +1058,15 @@
 						"header": [],
 						"url": {
 							"raw": "{{gatewayUrl}}/api/v1/stats/summary",
-							"host": ["{{gatewayUrl}}"],
-							"path": ["api", "v1", "stats", "summary"]
+							"host": [
+								"{{gatewayUrl}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"stats",
+								"summary"
+							]
 						},
 						"description": "GET /api/v1/stats/summary - Returns a summary of gateway request statistics.\n\nIncludes total requests, 402s issued, payments accepted, error counts, and revenue."
 					},
@@ -1009,8 +1092,15 @@
 						"header": [],
 						"url": {
 							"raw": "{{gatewayUrl}}/api/v1/stats/timeseries",
-							"host": ["{{gatewayUrl}}"],
-							"path": ["api", "v1", "stats", "timeseries"]
+							"host": [
+								"{{gatewayUrl}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"stats",
+								"timeseries"
+							]
 						},
 						"description": "GET /api/v1/stats/timeseries - Returns time-bucketed request statistics for dashboard charting.\n\nUsed by the React dashboard to render request volume and payment charts."
 					},
@@ -1036,8 +1126,15 @@
 						"header": [],
 						"url": {
 							"raw": "{{gatewayUrl}}/api/v1/treasury/info",
-							"host": ["{{gatewayUrl}}"],
-							"path": ["api", "v1", "treasury", "info"]
+							"host": [
+								"{{gatewayUrl}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"treasury",
+								"info"
+							]
 						},
 						"description": "GET /api/v1/treasury/info - Returns treasury wallet information.\n\nIncludes treasury address, balance, and UTXO summary."
 					},
@@ -1063,8 +1160,15 @@
 						"header": [],
 						"url": {
 							"raw": "{{gatewayUrl}}/api/v1/treasury/utxos",
-							"host": ["{{gatewayUrl}}"],
-							"path": ["api", "v1", "treasury", "utxos"]
+							"host": [
+								"{{gatewayUrl}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"treasury",
+								"utxos"
+							]
 						},
 						"description": "GET /api/v1/treasury/utxos - Returns the list of UTXOs held by the treasury wallet.\n\nShows txid, vout, satoshis, and confirmation status for each UTXO."
 					},
@@ -1090,8 +1194,15 @@
 						"header": [],
 						"url": {
 							"raw": "{{gatewayUrl}}/api/v1/treasury/history",
-							"host": ["{{gatewayUrl}}"],
-							"path": ["api", "v1", "treasury", "history"]
+							"host": [
+								"{{gatewayUrl}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"treasury",
+								"history"
+							]
 						},
 						"description": "GET /api/v1/treasury/history - Returns the treasury transaction history.\n\nShows fan-out and sweep operations with timestamps and amounts."
 					},

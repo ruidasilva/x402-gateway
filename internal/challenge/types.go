@@ -31,14 +31,15 @@ type TemplateRef struct {
 }
 
 // Challenge is the 402 payment challenge sent to the client.
+// Per x402.md §4, the challenge object MUST contain the fields listed below.
 type Challenge struct {
-	V                     string `json:"v"`                        // "1"
+	V                     int    `json:"v"`                        // 1 (integer per spec §4)
 	Scheme                string `json:"scheme"`                   // "bsv-tx-v1"
 	AmountSats            int64  `json:"amount_sats"`              // price in satoshis
 	PayeeLockingScriptHex string `json:"payee_locking_script_hex"` // hex-encoded locking script
 	ExpiresAt             int64  `json:"expires_at"`               // unix timestamp (seconds)
 
-	// Request binding fields (flat, per spec)
+	// Request binding fields (flat, per spec §4)
 	Domain           string `json:"domain"`             // host header
 	Method           string `json:"method"`             // HTTP method
 	Path             string `json:"path"`               // request path
@@ -48,13 +49,13 @@ type Challenge struct {
 
 	// Nonce UTXO — binds this challenge to a specific UTXO for replay protection.
 	// The proof transaction MUST spend this outpoint as one of its inputs.
-	NonceUTXO *NonceRef `json:"nonce_utxo,omitempty"`
+	// Per spec §4: nonce_utxo MUST identify a specific UTXO.
+	NonceUTXO *NonceRef `json:"nonce_utxo"`
 
 	// Profile B: pre-signed transaction template containing the nonce input
 	// and payment output. Omitted for Profile A challenges.
 	Template *TemplateRef `json:"template,omitempty"`
 
-	// Settlement parameters (spec-defined)
-	RequireMempoolAccept  bool `json:"require_mempool_accept"`  // true = 0-conf gating
-	ConfirmationsRequired int  `json:"confirmations_required"`  // 0 for instant
+	// Settlement parameters (spec-defined §4)
+	RequireMempoolAccept bool `json:"require_mempool_accept"` // true = 0-conf gating
 }

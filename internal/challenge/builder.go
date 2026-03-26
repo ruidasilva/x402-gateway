@@ -26,8 +26,8 @@ const (
 	// Scheme is the x402 payment scheme identifier.
 	Scheme = "bsv-tx-v1"
 
-	// Version is the protocol version.
-	Version = "1"
+	// Version is the protocol version (integer per spec §4).
+	Version = 1
 )
 
 // BuildOptions configures challenge generation.
@@ -75,9 +75,8 @@ func Build(req *http.Request, opts BuildOptions) (*Challenge, error) {
 		// Profile B template (nil for Profile A — omitted from JSON)
 		Template: opts.Template,
 
-		// Settlement parameters
-		RequireMempoolAccept:  true,
-		ConfirmationsRequired: 0,
+		// Settlement parameters (spec §4)
+		RequireMempoolAccept: true,
 	}
 
 	return ch, nil
@@ -126,7 +125,7 @@ func ValidateSchemeVersion(c *Challenge) error {
 		return fmt.Errorf("invalid_scheme: got %q, want %q", c.Scheme, Scheme)
 	}
 	if c.V != Version {
-		return fmt.Errorf("invalid_version: got %q, want %q", c.V, Version)
+		return fmt.Errorf("invalid_version: got %d, want %d", c.V, Version)
 	}
 	return nil
 }

@@ -24,8 +24,8 @@ export function buildProofHeader(params: {
   headers: Headers | Record<string, string>
   body: string | Uint8Array | null | undefined
 }): string {
+  // Per x402.md §5: request binding has 5 fields (no domain).
   const request: RequestBinding = {
-    domain: params.url.host,
     method: params.method.toUpperCase(),
     path: params.url.pathname,
     query: params.url.search.replace(/^\?/, ""),
@@ -33,13 +33,16 @@ export function buildProofHeader(params: {
     req_body_sha256: hashBody(params.body),
   }
 
+  // Per x402.md §5: v is integer, payment is nested under "payment".
   const proof: Proof = {
-    v: "1",
+    v: 1,
     scheme: "bsv-tx-v1",
-    txid: params.txid,
-    rawtx_b64: Buffer.from(params.rawtxHex, "hex").toString("base64"),
     challenge_sha256: params.challengeHash,
     request,
+    payment: {
+      txid: params.txid,
+      rawtx_b64: Buffer.from(params.rawtxHex, "hex").toString("base64"),
+    },
   }
 
   const json = JSON.stringify(proof)

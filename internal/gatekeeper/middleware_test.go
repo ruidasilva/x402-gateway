@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -126,10 +127,35 @@ func TestVerifyNonceAtInput0_ProfileB(t *testing.T) {
 // Integration test helpers
 // ---------------------------------------------------------------------------
 
-// mockMempoolChecker always reports the tx as visible (no double-spend).
-type mockMempoolChecker struct{}
+// mockMempoolChecker simulates settlement-layer mempool behaviour.
+// The first call for any txid returns visible=true. Subsequent calls for
+// DIFFERENT txids return doubleSpend=true if a previous txid was accepted,
+// modelling the settlement layer's single-spend enforcement (invariant R-1).
+type mockMempoolChecker struct {
+	mu       sync.Mutex
+	accepted map[string]bool // txids that have been "accepted" to the mempool
+}
 
-func (m *mockMempoolChecker) CheckMempool(string) (visible, doubleSpend bool, err error) {
+func (m *mockMempoolChecker) CheckMempool(txid string) (visible, doubleSpend bool, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.accepted == nil {
+		m.accepted = make(map[string]bool)
+	}
+
+	// If this exact txid was already accepted, it's an idempotent re-check.
+	if m.accepted[txid] {
+		return true, false, nil
+	}
+
+	// If ANY other txid has been accepted, this is a double-spend.
+	if len(m.accepted) > 0 {
+		return false, true, nil
+	}
+
+	// First txid — accept it.
+	m.accepted[txid] = true
 	return true, false, nil
 }
 
@@ -195,11 +221,12 @@ func buildProofHeader(t *testing.T, tx *transaction.Transaction, challengeHash s
 	proof := &Proof{
 		V:               challenge.Version,
 		Scheme:          challenge.Scheme,
-		TxID:            computedTxID,
-		RawTxB64:        rawTxB64,
 		ChallengeSHA256: challengeHash,
+		Payment: Payment{
+			TxID:     computedTxID,
+			RawTxB64: rawTxB64,
+		},
 		Request: RequestBinding{
-			Domain:           r.Host,
 			Method:           r.Method,
 			Path:             r.URL.Path,
 			Query:            r.URL.RawQuery,
@@ -319,8 +346,9 @@ func TestMiddleware_ReplayRejection(t *testing.T) {
 	req3.Header.Set(ProofHeader, proofHeader2)
 	handler.ServeHTTP(rec3, req3)
 
-	if rec3.Code != http.StatusConflict {
-		t.Fatalf("double-spend: want 409, got %d: %s", rec3.Code, rec3.Body.String())
+	// Per spec §9: "Nonce already spent → 402 Payment Required"
+	if rec3.Code != http.StatusPaymentRequired {
+		t.Fatalf("double-spend: want 402, got %d: %s", rec3.Code, rec3.Body.String())
 	}
 	t.Logf("double-spend (different tx, same nonce) → %d", rec3.Code)
 
@@ -365,9 +393,9 @@ func TestMiddleware_TamperedOutputValue(t *testing.T) {
 	handler.ServeHTTP(rec, req1)
 
 	// verifyPayeeOutput at Step 13 checks output[0].Satoshis >= AmountSats.
-	// 50 < 100 → ErrInvalidPayee → HTTP 403.
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("tampered output value: want 403, got %d: %s", rec.Code, rec.Body.String())
+	// 50 < 100 → ErrInvalidPayee → HTTP 400 per spec §9 ("Invalid transaction → 400").
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("tampered output value: want 400, got %d: %s", rec.Code, rec.Body.String())
 	}
 	t.Logf("tampered output value (50 < 100) → %d", rec.Code)
 
@@ -423,8 +451,9 @@ func TestMiddleware_TamperedPayeeScript(t *testing.T) {
 	req1.Header.Set(ProofHeader, proofHeader)
 	handler.ServeHTTP(rec, req1)
 
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("tampered payee script: want 403, got %d: %s", rec.Code, rec.Body.String())
+	// Per spec §9: "Invalid transaction → 400 Bad Request"
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("tampered payee script: want 400, got %d: %s", rec.Code, rec.Body.String())
 	}
 
 	var body map[string]any

@@ -81,19 +81,25 @@ var HeaderAllowlist = []string{
 }
 
 // Proof is the client's payment proof submitted in the X402-Proof header.
+// Per x402.md §5, the proof object MUST contain the fields listed below.
 type Proof struct {
-	V               string         `json:"v"`
-	Scheme          string         `json:"scheme"`
-	TxID            string         `json:"txid"`
-	RawTxB64        string         `json:"rawtx_b64"`
-	ChallengeSHA256 string         `json:"challenge_sha256"`
-	Request         RequestBinding `json:"request"`
+	V               int            `json:"v"`                // integer per spec §5
+	Scheme          string         `json:"scheme"`           // "bsv-tx-v1"
+	ChallengeSHA256 string         `json:"challenge_sha256"` // SHA-256 of canonical challenge JSON
+	Request         RequestBinding `json:"request"`          // request binding fields per spec §5
+	Payment         Payment        `json:"payment"`          // nested per spec §5
 	ClientSig       *ClientSig     `json:"client_sig,omitempty"`
 }
 
+// Payment contains the transaction data nested under "payment" per spec §5.
+type Payment struct {
+	TxID     string `json:"txid"`      // hex txid — MUST match decoded rawtx
+	RawTxB64 string `json:"rawtx_b64"` // base64 (standard) encoded raw tx bytes
+}
+
 // RequestBinding contains the request parameters for binding validation.
+// Per spec §5: method, path, query, req_headers_sha256, req_body_sha256.
 type RequestBinding struct {
-	Domain           string `json:"domain"`
 	Method           string `json:"method"`
 	Path             string `json:"path"`
 	Query            string `json:"query"`
@@ -101,7 +107,7 @@ type RequestBinding struct {
 	ReqBodySHA256    string `json:"req_body_sha256"`
 }
 
-// ClientSig contains optional client signature (required in v1.1).
+// ClientSig contains optional client signature (extension, not in v1.0 spec).
 type ClientSig struct {
 	Alg          string `json:"alg"`
 	PubkeyHex    string `json:"pubkey_hex"`
@@ -134,21 +140,27 @@ const (
 )
 
 // HTTPStatusForError maps spec error codes to HTTP status codes.
+// Per x402.md §9:
+//
+//	Expired challenge       → 402 Payment Required
+//	Nonce already spent     → 402 Payment Required
+//	Invalid transaction     → 400 Bad Request
+//	Request binding mismatch → 400 Bad Request
+//	Insufficient payment    → 402 Payment Required
+//	Unsupported scheme      → 400 Bad Request
 func HTTPStatusForError(code ErrorCode) int {
 	switch code {
 	case ErrInvalidVersion, ErrInvalidScheme, ErrInvalidProof, ErrChallengeNotFound, ErrNonceMissing:
-		return http.StatusBadRequest
-	case ErrExpiredChallenge, ErrInsufficientAmount:
-		return http.StatusPaymentRequired
+		return http.StatusBadRequest // 400
 	case ErrInvalidBinding, ErrInvalidPayee:
-		return http.StatusForbidden
-	case ErrDoubleSpend, ErrMempoolRejected:
-		return http.StatusConflict
+		return http.StatusBadRequest // 400 — spec §9: "Request binding mismatch → 400" / "Invalid transaction → 400"
+	case ErrExpiredChallenge, ErrInsufficientAmount, ErrDoubleSpend, ErrMempoolRejected:
+		return http.StatusPaymentRequired // 402 — spec §9: "Nonce already spent → 402"
 	case ErrMempoolPending:
-		return http.StatusAccepted
+		return http.StatusAccepted // 202
 	case ErrNoUTXOsAvailable, ErrMempoolError:
-		return http.StatusServiceUnavailable
+		return http.StatusServiceUnavailable // 503
 	default:
-		return http.StatusInternalServerError
+		return http.StatusInternalServerError // 500
 	}
 }

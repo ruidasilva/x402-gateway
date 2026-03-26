@@ -14,29 +14,24 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
-	"regexp"
 	"sort"
 	"strings"
 )
 
-// collapseWS replaces runs of whitespace with a single space.
-var collapseWS = regexp.MustCompile(`\s+`)
-
 // HashBody returns the SHA-256 hex digest of the request body.
-// Per spec §3.2: SHA256(raw_body_bytes) → hex. If no body: SHA256("") → hex.
+// Per spec §4: SHA256(raw_body_bytes) → hex. If no body: SHA256("") → hex.
 func HashBody(body []byte) string {
 	h := sha256.Sum256(body)
 	return hex.EncodeToString(h[:])
 }
 
 // HashHeaders returns the SHA-256 hex digest of selected headers in canonical form.
-// Per spec (04-Protocol-Spec.md §3.1):
-//   - Lowercase header names
-//   - Trim surrounding whitespace in values
-//   - Collapse internal runs of whitespace to single space
-//   - Sort by header name (lexicographic)
-//   - Join as: name:value\n for each header
-//   - SHA256(utf8(canonical_string)) → hex
+// Per spec §4 (Canonical header-binding string):
+//  1. Lowercase each selected header name.
+//  2. Trim optional whitespace around the header value.
+//  3. Sort headers by header name in ascending byte order.
+//  4. Concatenate each as name:value\n (a single LF).
+//  5. SHA256(utf8(canonical_string)) → hex.
 func HashHeaders(headers http.Header, keys []string) string {
 	sortedKeys := make([]string, len(keys))
 	copy(sortedKeys, keys)
@@ -46,7 +41,6 @@ func HashHeaders(headers http.Header, keys []string) string {
 	for _, k := range sortedKeys {
 		lk := strings.ToLower(k)
 		val := strings.TrimSpace(headers.Get(k))
-		val = collapseWS.ReplaceAllString(val, " ")
 		parts = append(parts, lk+":"+val)
 	}
 

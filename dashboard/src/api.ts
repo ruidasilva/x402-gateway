@@ -231,21 +231,22 @@ export async function buildCompleteProof(
 
   const rawTxB64 = hexToBase64(completedTxHex)
 
+  // Proof object per x402.md §5: v is integer, payment is nested.
+  // request contains 5 fields (no domain — domain is in the challenge, not proof).
   const proof = {
-    v: challenge.v || '1',
+    v: 1,
     scheme: challenge.scheme || 'bsv-tx-v1',
-    txid,
-    rawtx_b64: rawTxB64,
     challenge_sha256: challengeHash,
     request: {
-      domain: challenge.domain,
       method: challenge.method,
       path: challenge.path,
       query: challenge.query || '',
-      // Use the binding hashes from the challenge itself — the gateway computed
-      // these when issuing the challenge, and they must match exactly on proof.
       req_headers_sha256: challenge.req_headers_sha256,
       req_body_sha256: challenge.req_body_sha256,
+    },
+    payment: {
+      txid,
+      rawtx_b64: rawTxB64,
     },
   }
 

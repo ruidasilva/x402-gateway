@@ -109,7 +109,6 @@ export interface Broadcaster {
 // ---------------------------------------------------------------------------
 
 export interface RequestBinding {
-  domain: string
   method: string
   path: string
   query: string
@@ -117,11 +116,15 @@ export interface RequestBinding {
   req_body_sha256: string
 }
 
-export interface Proof {
-  v: string
-  scheme: string
+export interface Payment {
   txid: string
   rawtx_b64: string
+}
+
+export interface Proof {
+  v: number
+  scheme: string
   challenge_sha256: string
   request: RequestBinding
+  payment: Payment
 }

@@ -5,7 +5,6 @@
 // You may obtain a copy of the License at
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
-//
 
 
 package challenge
@@ -75,9 +74,10 @@ func TestCanonicalJSON_IntegerPreservation(t *testing.T) {
 
 func TestCanonicalJSON_Stability(t *testing.T) {
 	// Same input must always produce the same bytes
+	// Note: "v" is now an integer per spec §4
 	input := map[string]any{
 		"scheme":      "bsv-tx-v1",
-		"v":           "1",
+		"v":           float64(1),
 		"amount_sats": float64(100),
 	}
 
@@ -100,9 +100,10 @@ func TestCanonicalJSON_Stability(t *testing.T) {
 
 func TestCanonicalJSON_GoldenHash(t *testing.T) {
 	// Golden test: a fixed spec-compliant challenge must always produce
-	// the exact same SHA-256. Field names match 04-Protocol-Spec.md.
+	// the exact same SHA-256. Per x402.md §4, "v" is an integer.
+	// confirmations_required is NOT a spec field and is excluded.
 	ch := map[string]any{
-		"v":                        "1",
+		"v":                        float64(1), // integer per spec §4
 		"scheme":                   "bsv-tx-v1",
 		"amount_sats":              float64(100),
 		"payee_locking_script_hex": "76a91489abcdefab88ac",
@@ -114,7 +115,6 @@ func TestCanonicalJSON_GoldenHash(t *testing.T) {
 		"req_headers_sha256":       "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 		"req_body_sha256":          "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 		"require_mempool_accept":   true,
-		"confirmations_required":   float64(0),
 		"nonce_utxo": map[string]any{
 			"txid":               "deadbeef" + "00000000000000000000000000000000000000000000000000000000",
 			"vout":               float64(0),
@@ -151,9 +151,10 @@ func TestCanonicalJSON_GoldenHash(t *testing.T) {
 }
 
 func TestCanonicalJSON_ChallengeStruct(t *testing.T) {
-	// Test with an actual Challenge struct — keys must be sorted by JSON tag name
+	// Test with an actual Challenge struct — keys must be sorted by JSON tag name.
+	// Per spec §4: v is integer, no confirmations_required field.
 	ch := &Challenge{
-		V:                     "1",
+		V:                     1,
 		Scheme:                "bsv-tx-v1",
 		AmountSats:            100,
 		PayeeLockingScriptHex: "76a91489abcdefab88ac",
@@ -165,7 +166,6 @@ func TestCanonicalJSON_ChallengeStruct(t *testing.T) {
 		ReqHeadersSHA256:      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 		ReqBodySHA256:         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 		RequireMempoolAccept:  true,
-		ConfirmationsRequired: 0,
 		NonceUTXO: &NonceRef{
 			TxID:             "deadbeef" + "00000000000000000000000000000000000000000000000000000000",
 			Vout:             0,
@@ -193,6 +193,34 @@ func TestCanonicalJSON_ChallengeStruct(t *testing.T) {
 
 	t.Logf("Canonical: %s", string(result))
 	t.Logf("Hash: %s", hash1)
+
+	// Verify the map-based and struct-based golden hashes match.
+	// This confirms that CanonicalJSON(struct) and CanonicalJSON(map)
+	// produce identical bytes when fields are equivalent.
+	goldenMap := map[string]any{
+		"v":                        float64(1),
+		"scheme":                   "bsv-tx-v1",
+		"amount_sats":              float64(100),
+		"payee_locking_script_hex": "76a91489abcdefab88ac",
+		"expires_at":               float64(1700000000),
+		"domain":                   "localhost:8402",
+		"method":                   "GET",
+		"path":                     "/v1/expensive",
+		"query":                    "",
+		"req_headers_sha256":       "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+		"req_body_sha256":          "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+		"require_mempool_accept":   true,
+		"nonce_utxo": map[string]any{
+			"txid":               "deadbeef" + "00000000000000000000000000000000000000000000000000000000",
+			"vout":               float64(0),
+			"satoshis":           float64(1),
+			"locking_script_hex": "76a914aabbccdd88ac",
+		},
+	}
+	mapCanonical, _ := CanonicalJSON(goldenMap)
+	if string(result) != string(mapCanonical) {
+		t.Errorf("struct vs map canonical mismatch:\n  struct: %s\n  map:    %s", string(result), string(mapCanonical))
+	}
 }
 
 func TestCanonicalJSON_StructInput(t *testing.T) {
@@ -260,4 +288,49 @@ func TestCanonicalJSON_Arrays(t *testing.T) {
 	if string(result) != expected {
 		t.Errorf("got %s, want %s", string(result), expected)
 	}
+}
+
+// TestCanonicalJSON_VFieldIsInteger verifies that the "v" field serializes
+// as an integer per spec §4 (not as a string).
+func TestCanonicalJSON_VFieldIsInteger(t *testing.T) {
+	ch := &Challenge{
+		V:      1,
+		Scheme: "bsv-tx-v1",
+		NonceUTXO: &NonceRef{
+			TxID: "0000000000000000000000000000000000000000000000000000000000000000",
+		},
+	}
+
+	result, err := CanonicalJSON(ch)
+	if err != nil {
+		t.Fatalf("CanonicalJSON: %v", err)
+	}
+
+	canonical := string(result)
+
+	// Must contain "v":1 (integer), NOT "v":"1" (string)
+	if !contains(canonical, `"v":1,`) && !contains(canonical, `"v":1}`) {
+		t.Errorf("canonical JSON should contain \"v\":1 (integer), got: %s", canonical)
+	}
+	if contains(canonical, `"v":"1"`) {
+		t.Errorf("canonical JSON should NOT contain \"v\":\"1\" (string), got: %s", canonical)
+	}
+
+	// Must NOT contain confirmations_required (removed from struct)
+	if contains(canonical, "confirmations_required") {
+		t.Errorf("canonical JSON should NOT contain confirmations_required, got: %s", canonical)
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && searchSubstring(s, substr)
+}
+
+func searchSubstring(s, sub string) bool {
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }

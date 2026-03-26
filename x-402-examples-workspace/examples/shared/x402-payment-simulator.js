@@ -141,19 +141,22 @@ async function simulatePayment(challengeHeader, requestInfo = {}) {
     "base64"
   );
 
+  // Proof object per x402.md §5: v is integer, payment is nested.
+  // request contains 5 fields (no domain).
   const proof = {
-    v: "1",
+    v: 1,
     scheme: "bsv-tx-v1",
-    txid,
-    rawtx_b64: rawtxB64,
     challenge_sha256: challengeHash,
     request: {
-      domain: challenge.domain || "localhost:3000",
       method: (requestInfo.method || "GET").toUpperCase(),
       path: requestInfo.path || challenge.path || "/",
       query: requestInfo.query || "",
       req_headers_sha256: reqHeadersHash,
       req_body_sha256: reqBodyHash,
+    },
+    payment: {
+      txid,
+      rawtx_b64: rawtxB64,
     },
   };
 

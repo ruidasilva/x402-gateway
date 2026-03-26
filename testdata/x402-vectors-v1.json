@@ -1,0 +1,185 @@
+{
+  "version": "1.0",
+  "generated_at": "2026-03-26T17:21:50Z",
+  "generated_by": "x402-gateway/cmd/vecgen (Go reference implementation)",
+  "vectors": [
+    {
+      "name": "valid_get_empty",
+      "purpose": "Canonical GET challenge with empty query and empty body",
+      "expected_result": "valid",
+      "challenge": {
+        "v": 1,
+        "scheme": "bsv-tx-v1",
+        "amount_sats": 100,
+        "payee_locking_script_hex": "76a91489abcdefab89abcdefab89abcdefab89abcdefab88ac",
+        "expires_at": 1800000000,
+        "domain": "api.example.com",
+        "method": "GET",
+        "path": "/v1/resource",
+        "query": "",
+        "req_headers_sha256": "415053fdc9f2f89c68e4521ba5fc7dc153e12a1ac92e3ba547815f7722174f1e",
+        "req_body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "nonce_utxo": {
+          "txid": "a1a2a3a4a5a6a7a8a9a0b1b2b3b4b5b6b7b8b9b0c1c2c3c4c5c6c7c8c9c0d1d2",
+          "vout": 0,
+          "satoshis": 1,
+          "locking_script_hex": "76a914aabbccdd00112233445566778899aabbccddeeff88ac"
+        },
+        "require_mempool_accept": true
+      },
+      "canonical_challenge_json": "{\"amount_sats\":100,\"domain\":\"api.example.com\",\"expires_at\":1800000000,\"method\":\"GET\",\"nonce_utxo\":{\"locking_script_hex\":\"76a914aabbccdd00112233445566778899aabbccddeeff88ac\",\"satoshis\":1,\"txid\":\"a1a2a3a4a5a6a7a8a9a0b1b2b3b4b5b6b7b8b9b0c1c2c3c4c5c6c7c8c9c0d1d2\",\"vout\":0},\"path\":\"/v1/resource\",\"payee_locking_script_hex\":\"76a91489abcdefab89abcdefab89abcdefab89abcdefab88ac\",\"query\":\"\",\"req_body_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"req_headers_sha256\":\"415053fdc9f2f89c68e4521ba5fc7dc153e12a1ac92e3ba547815f7722174f1e\",\"require_mempool_accept\":true,\"scheme\":\"bsv-tx-v1\",\"v\":1}",
+      "canonical_challenge_hex": "7b22616d6f756e745f73617473223a3130302c22646f6d61696e223a226170692e6578616d706c652e636f6d222c22657870697265735f6174223a313830303030303030302c226d6574686f64223a22474554222c226e6f6e63655f7574786f223a7b226c6f636b696e675f7363726970745f686578223a223736613931346161626263636464303031313232333334343535363637373838393961616262636364646565666638386163222c227361746f73686973223a312c2274786964223a2261316132613361346135613661376138613961306231623262336234623562366237623862396230633163326333633463356336633763386339633064316432222c22766f7574223a307d2c2270617468223a222f76312f7265736f75726365222c2270617965655f6c6f636b696e675f7363726970745f686578223a223736613931343839616263646566616238396162636465666162383961626364656661623839616263646566616238386163222c227175657279223a22222c227265715f626f64795f736861323536223a2265336230633434323938666331633134396166626634633839393666623932343237616534316534363439623933346361343935393931623738353262383535222c227265715f686561646572735f736861323536223a2234313530353366646339663266383963363865343532316261356663376463313533653132613161633932653362613534373831356637373232313734663165222c22726571756972655f6d656d706f6f6c5f616363657074223a747275652c22736368656d65223a226273762d74782d7631222c2276223a317d",
+      "challenge_sha256": "a8dd055f19737ca5cb906962135a587f9e4b51be27b031609db9bc30ba33962c",
+      "challenge_base64url": "eyJhbW91bnRfc2F0cyI6MTAwLCJkb21haW4iOiJhcGkuZXhhbXBsZS5jb20iLCJleHBpcmVzX2F0IjoxODAwMDAwMDAwLCJtZXRob2QiOiJHRVQiLCJub25jZV91dHhvIjp7ImxvY2tpbmdfc2NyaXB0X2hleCI6Ijc2YTkxNGFhYmJjY2RkMDAxMTIyMzM0NDU1NjY3Nzg4OTlhYWJiY2NkZGVlZmY4OGFjIiwic2F0b3NoaXMiOjEsInR4aWQiOiJhMWEyYTNhNGE1YTZhN2E4YTlhMGIxYjJiM2I0YjViNmI3YjhiOWIwYzFjMmMzYzRjNWM2YzdjOGM5YzBkMWQyIiwidm91dCI6MH0sInBhdGgiOiIvdjEvcmVzb3VyY2UiLCJwYXllZV9sb2NraW5nX3NjcmlwdF9oZXgiOiI3NmE5MTQ4OWFiY2RlZmFiODlhYmNkZWZhYjg5YWJjZGVmYWI4OWFiY2RlZmFiODhhYyIsInF1ZXJ5IjoiIiwicmVxX2JvZHlfc2hhMjU2IjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsInJlcV9oZWFkZXJzX3NoYTI1NiI6IjQxNTA1M2ZkYzlmMmY4OWM2OGU0NTIxYmE1ZmM3ZGMxNTNlMTJhMWFjOTJlM2JhNTQ3ODE1Zjc3MjIxNzRmMWUiLCJyZXF1aXJlX21lbXBvb2xfYWNjZXB0Ijp0cnVlLCJzY2hlbWUiOiJic3YtdHgtdjEiLCJ2IjoxfQ",
+      "headers_sha256": "415053fdc9f2f89c68e4521ba5fc7dc153e12a1ac92e3ba547815f7722174f1e",
+      "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "notes": "Empty body → SHA256(\"\"). Headers → canonical header-binding string with allowlist values all empty."
+    },
+    {
+      "name": "valid_post_with_body",
+      "purpose": "POST challenge with body hash, query string, and content-type header",
+      "expected_result": "valid",
+      "challenge": {
+        "v": 1,
+        "scheme": "bsv-tx-v1",
+        "amount_sats": 200,
+        "payee_locking_script_hex": "76a91489abcdefab89abcdefab89abcdefab89abcdefab88ac",
+        "expires_at": 1800000000,
+        "domain": "api.example.com",
+        "method": "POST",
+        "path": "/v1/resource",
+        "query": "ref=abc123",
+        "req_headers_sha256": "f541fff4a47e39602f4f23ffb6cb792e2a197dc6aa24cedb8af9aa38973f51f3",
+        "req_body_sha256": "1a3b914eaa2142aa418960938d4b0ed66154f69676d5979a9d19599443f69b73",
+        "nonce_utxo": {
+          "txid": "a1a2a3a4a5a6a7a8a9a0b1b2b3b4b5b6b7b8b9b0c1c2c3c4c5c6c7c8c9c0d1d2",
+          "vout": 0,
+          "satoshis": 1,
+          "locking_script_hex": "76a914aabbccdd00112233445566778899aabbccddeeff88ac"
+        },
+        "require_mempool_accept": true
+      },
+      "canonical_challenge_json": "{\"amount_sats\":200,\"domain\":\"api.example.com\",\"expires_at\":1800000000,\"method\":\"POST\",\"nonce_utxo\":{\"locking_script_hex\":\"76a914aabbccdd00112233445566778899aabbccddeeff88ac\",\"satoshis\":1,\"txid\":\"a1a2a3a4a5a6a7a8a9a0b1b2b3b4b5b6b7b8b9b0c1c2c3c4c5c6c7c8c9c0d1d2\",\"vout\":0},\"path\":\"/v1/resource\",\"payee_locking_script_hex\":\"76a91489abcdefab89abcdefab89abcdefab89abcdefab88ac\",\"query\":\"ref=abc123\",\"req_body_sha256\":\"1a3b914eaa2142aa418960938d4b0ed66154f69676d5979a9d19599443f69b73\",\"req_headers_sha256\":\"f541fff4a47e39602f4f23ffb6cb792e2a197dc6aa24cedb8af9aa38973f51f3\",\"require_mempool_accept\":true,\"scheme\":\"bsv-tx-v1\",\"v\":1}",
+      "canonical_challenge_hex": "7b22616d6f756e745f73617473223a3230302c22646f6d61696e223a226170692e6578616d706c652e636f6d222c22657870697265735f6174223a313830303030303030302c226d6574686f64223a22504f5354222c226e6f6e63655f7574786f223a7b226c6f636b696e675f7363726970745f686578223a223736613931346161626263636464303031313232333334343535363637373838393961616262636364646565666638386163222c227361746f73686973223a312c2274786964223a2261316132613361346135613661376138613961306231623262336234623562366237623862396230633163326333633463356336633763386339633064316432222c22766f7574223a307d2c2270617468223a222f76312f7265736f75726365222c2270617965655f6c6f636b696e675f7363726970745f686578223a223736613931343839616263646566616238396162636465666162383961626364656661623839616263646566616238386163222c227175657279223a227265663d616263313233222c227265715f626f64795f736861323536223a2231613362393134656161323134326161343138393630393338643462306564363631353466363936373664353937396139643139353939343433663639623733222c227265715f686561646572735f736861323536223a2266353431666666346134376533393630326634663233666662366362373932653261313937646336616132346365646238616639616133383937336635316633222c22726571756972655f6d656d706f6f6c5f616363657074223a747275652c22736368656d65223a226273762d74782d7631222c2276223a317d",
+      "challenge_sha256": "353de96636015a482e68816fd52885b67862f19d86bf7c8b9b245a99229d12b3",
+      "challenge_base64url": "eyJhbW91bnRfc2F0cyI6MjAwLCJkb21haW4iOiJhcGkuZXhhbXBsZS5jb20iLCJleHBpcmVzX2F0IjoxODAwMDAwMDAwLCJtZXRob2QiOiJQT1NUIiwibm9uY2VfdXR4byI6eyJsb2NraW5nX3NjcmlwdF9oZXgiOiI3NmE5MTRhYWJiY2NkZDAwMTEyMjMzNDQ1NTY2Nzc4ODk5YWFiYmNjZGRlZWZmODhhYyIsInNhdG9zaGlzIjoxLCJ0eGlkIjoiYTFhMmEzYTRhNWE2YTdhOGE5YTBiMWIyYjNiNGI1YjZiN2I4YjliMGMxYzJjM2M0YzVjNmM3YzhjOWMwZDFkMiIsInZvdXQiOjB9LCJwYXRoIjoiL3YxL3Jlc291cmNlIiwicGF5ZWVfbG9ja2luZ19zY3JpcHRfaGV4IjoiNzZhOTE0ODlhYmNkZWZhYjg5YWJjZGVmYWI4OWFiY2RlZmFiODlhYmNkZWZhYjg4YWMiLCJxdWVyeSI6InJlZj1hYmMxMjMiLCJyZXFfYm9keV9zaGEyNTYiOiIxYTNiOTE0ZWFhMjE0MmFhNDE4OTYwOTM4ZDRiMGVkNjYxNTRmNjk2NzZkNTk3OWE5ZDE5NTk5NDQzZjY5YjczIiwicmVxX2hlYWRlcnNfc2hhMjU2IjoiZjU0MWZmZjRhNDdlMzk2MDJmNGYyM2ZmYjZjYjc5MmUyYTE5N2RjNmFhMjRjZWRiOGFmOWFhMzg5NzNmNTFmMyIsInJlcXVpcmVfbWVtcG9vbF9hY2NlcHQiOnRydWUsInNjaGVtZSI6ImJzdi10eC12MSIsInYiOjF9",
+      "header_binding_string": "accept:\ncontent-length:33\ncontent-type:application/json\nx402-client:\nx402-idempotency-key:\n",
+      "header_binding_hex": "6163636570743a0a636f6e74656e742d6c656e6774683a33330a636f6e74656e742d747970653a6170706c69636174696f6e2f6a736f6e0a783430322d636c69656e743a0a783430322d6964656d706f74656e63792d6b65793a0a",
+      "headers_sha256": "f541fff4a47e39602f4f23ffb6cb792e2a197dc6aa24cedb8af9aa38973f51f3",
+      "body_sha256": "1a3b914eaa2142aa418960938d4b0ed66154f69676d5979a9d19599443f69b73",
+      "body_bytes": "7b22616374696f6e223a22637265617465222c226e616d65223a2274657374227d",
+      "notes": "Body is raw JSON bytes. Query is without leading '?'. Header binding includes content-type and content-length."
+    },
+    {
+      "name": "header_binding_canonical",
+      "purpose": "Demonstrates canonical header-binding string construction per spec §4",
+      "expected_result": "reference",
+      "header_binding_string": "accept:application/json\ncontent-length:\ncontent-type:text/plain\nx402-client:test-client/1.0\nx402-idempotency-key:\n",
+      "header_binding_hex": "6163636570743a6170706c69636174696f6e2f6a736f6e0a636f6e74656e742d6c656e6774683a0a636f6e74656e742d747970653a746578742f706c61696e0a783430322d636c69656e743a746573742d636c69656e742f312e300a783430322d6964656d706f74656e63792d6b65793a0a",
+      "headers_sha256": "c00f87e2f1dfe7c20cad1efbb87067e8f1116827aea178c11bc36095a9ec72ca",
+      "notes": "Headers sorted by name. Missing headers have empty value. Each line: name:value\\n"
+    },
+    {
+      "name": "body_hash_examples",
+      "purpose": "SHA-256 of empty body and non-empty body per spec §4",
+      "expected_result": "reference",
+      "body_sha256": "e43abcf3375244839c012f9633f95862d232a95b00d5bc7348b3098b9fed7f32",
+      "body_bytes": "7b226b6579223a2276616c7565227d",
+      "notes": "Empty body hash: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855. Non-empty body hash: e43abcf3375244839c012f9633f95862d232a95b00d5bc7348b3098b9fed7f32"
+    },
+    {
+      "name": "invalid_binding_path_mismatch",
+      "purpose": "Proof bound to /v1/resource but request sent to /v1/other — must be rejected",
+      "expected_result": "reject",
+      "challenge": {
+        "v": 1,
+        "scheme": "bsv-tx-v1",
+        "amount_sats": 100,
+        "payee_locking_script_hex": "76a91489abcdefab89abcdefab89abcdefab89abcdefab88ac",
+        "expires_at": 1800000000,
+        "domain": "api.example.com",
+        "method": "GET",
+        "path": "/v1/resource",
+        "query": "",
+        "req_headers_sha256": "415053fdc9f2f89c68e4521ba5fc7dc153e12a1ac92e3ba547815f7722174f1e",
+        "req_body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "nonce_utxo": {
+          "txid": "a1a2a3a4a5a6a7a8a9a0b1b2b3b4b5b6b7b8b9b0c1c2c3c4c5c6c7c8c9c0d1d2",
+          "vout": 0,
+          "satoshis": 1,
+          "locking_script_hex": "76a914aabbccdd00112233445566778899aabbccddeeff88ac"
+        },
+        "require_mempool_accept": true
+      },
+      "canonical_challenge_json": "{\"amount_sats\":100,\"domain\":\"api.example.com\",\"expires_at\":1800000000,\"method\":\"GET\",\"nonce_utxo\":{\"locking_script_hex\":\"76a914aabbccdd00112233445566778899aabbccddeeff88ac\",\"satoshis\":1,\"txid\":\"a1a2a3a4a5a6a7a8a9a0b1b2b3b4b5b6b7b8b9b0c1c2c3c4c5c6c7c8c9c0d1d2\",\"vout\":0},\"path\":\"/v1/resource\",\"payee_locking_script_hex\":\"76a91489abcdefab89abcdefab89abcdefab89abcdefab88ac\",\"query\":\"\",\"req_body_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"req_headers_sha256\":\"415053fdc9f2f89c68e4521ba5fc7dc153e12a1ac92e3ba547815f7722174f1e\",\"require_mempool_accept\":true,\"scheme\":\"bsv-tx-v1\",\"v\":1}",
+      "challenge_sha256": "a8dd055f19737ca5cb906962135a587f9e4b51be27b031609db9bc30ba33962c",
+      "notes": "Server verifies inbound request path matches challenge.path. Mismatch → 400 invalid_binding."
+    },
+    {
+      "name": "invalid_txid_mismatch",
+      "purpose": "proof.payment.txid does not match SHA256(SHA256(rawtx)) — must be rejected",
+      "expected_result": "reject",
+      "rawtx_hex": "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff00ffffffff0164000000000000001976a91489abcdefab89abcdefab89abcdefab89abcdefab88ac00000000",
+      "txid": "correct=e5b2cf0ffb793fcf2b92c38cf3a1809815abe475a1c0841c7f9d20c88e1a4cd5, submitted=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "notes": "txid = SHA256(SHA256(raw_tx_bytes)) as lowercase hex. Server computes txid from rawtx and rejects on mismatch."
+    },
+    {
+      "name": "expired_challenge",
+      "purpose": "Challenge with expires_at in the past — proof must be rejected with 402",
+      "expected_result": "reject",
+      "challenge": {
+        "v": 1,
+        "scheme": "bsv-tx-v1",
+        "amount_sats": 100,
+        "payee_locking_script_hex": "76a91489abcdefab89abcdefab89abcdefab89abcdefab88ac",
+        "expires_at": 1600000000,
+        "domain": "api.example.com",
+        "method": "GET",
+        "path": "/v1/resource",
+        "query": "",
+        "req_headers_sha256": "415053fdc9f2f89c68e4521ba5fc7dc153e12a1ac92e3ba547815f7722174f1e",
+        "req_body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "nonce_utxo": {
+          "txid": "a1a2a3a4a5a6a7a8a9a0b1b2b3b4b5b6b7b8b9b0c1c2c3c4c5c6c7c8c9c0d1d2",
+          "vout": 0,
+          "satoshis": 1,
+          "locking_script_hex": "76a914aabbccdd00112233445566778899aabbccddeeff88ac"
+        },
+        "require_mempool_accept": true
+      },
+      "canonical_challenge_json": "{\"amount_sats\":100,\"domain\":\"api.example.com\",\"expires_at\":1600000000,\"method\":\"GET\",\"nonce_utxo\":{\"locking_script_hex\":\"76a914aabbccdd00112233445566778899aabbccddeeff88ac\",\"satoshis\":1,\"txid\":\"a1a2a3a4a5a6a7a8a9a0b1b2b3b4b5b6b7b8b9b0c1c2c3c4c5c6c7c8c9c0d1d2\",\"vout\":0},\"path\":\"/v1/resource\",\"payee_locking_script_hex\":\"76a91489abcdefab89abcdefab89abcdefab89abcdefab88ac\",\"query\":\"\",\"req_body_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"req_headers_sha256\":\"415053fdc9f2f89c68e4521ba5fc7dc153e12a1ac92e3ba547815f7722174f1e\",\"require_mempool_accept\":true,\"scheme\":\"bsv-tx-v1\",\"v\":1}",
+      "challenge_sha256": "4f608f0a8806de3a39eaa5d660e89551f291021e03fef39c136fe4b91c839c3b",
+      "notes": "expires_at=1600000000 is in the past. Per spec §7: reject when current_time \u003e expires_at (strictly greater)."
+    },
+    {
+      "name": "invalid_proof_version",
+      "purpose": "Proof with v=0 — must be rejected, not defaulted to v=1",
+      "expected_result": "reject",
+      "proof": {
+        "challenge_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "payment": {
+          "rawtx_b64": "AAAA",
+          "txid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "request": {
+          "method": "GET",
+          "path": "/v1/resource",
+          "query": "",
+          "req_body_sha256": "",
+          "req_headers_sha256": ""
+        },
+        "scheme": "bsv-tx-v1",
+        "v": 0
+      },
+      "notes": "Per spec §5: 'The server MUST reject proofs whose v value it does not support.' v=0 is not supported."
+    },
+    {
+      "name": "txid_derivation",
+      "purpose": "Demonstrates txid = SHA256(SHA256(raw_tx_bytes)) with byte-reversed hex encoding",
+      "expected_result": "reference",
+      "rawtx_hex": "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff00ffffffff0164000000000000001976a91489abcdefab89abcdefab89abcdefab89abcdefab88ac00000000",
+      "txid": "e5b2cf0ffb793fcf2b92c38cf3a1809815abe475a1c0841c7f9d20c88e1a4cd5",
+      "notes": "rawtx_b64 (standard base64): AQAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAP////8A/////wFkAAAAAAAAABl2qRSJq83vq4mrze+riavN76uJq83vq4isAAAAAA==. txid = double SHA256, byte-reversed, lowercase hex."
+    }
+  ]
+}

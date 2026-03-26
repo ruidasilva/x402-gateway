@@ -81,30 +81,36 @@ func handleChallenge(w http.ResponseWriter, r *http.Request, cfg Config, logger 
 		return
 	}
 
-	// Lease a nonce UTXO for replay protection
-	var nonceRef *challenge.NonceRef
-	var templateRef *challenge.TemplateRef
-	if cfg.NoncePool != nil {
-		nonceUTXO, err := cfg.NoncePool.Lease()
-		if err != nil {
-			logger.Error("no nonce UTXOs available", "error", err)
-			writeError(w, HTTPStatusForError(ErrNoUTXOsAvailable), string(ErrNoUTXOsAvailable),
-				"no nonce UTXOs available for challenge")
-			return
-		}
-		nonceRef = &challenge.NonceRef{
-			TxID:             nonceUTXO.TxID,
-			Vout:             nonceUTXO.Vout,
-			Satoshis:         nonceUTXO.Satoshis,
-			LockingScriptHex: nonceUTXO.Script,
-		}
+	// Lease a nonce UTXO for replay protection.
+	// Per spec §4 / invariant N-1: nonce_utxo MUST identify a specific UTXO.
+	// A challenge without a nonce UTXO has no replay protection.
+	if cfg.NoncePool == nil {
+		logger.Error("NoncePool not configured — cannot issue challenge (spec §4: nonce_utxo MUST be present)")
+		writeError(w, HTTPStatusForError(ErrNoUTXOsAvailable), string(ErrNoUTXOsAvailable),
+			"nonce pool not configured")
+		return
+	}
 
-		// Profile B: include pre-signed template if available
-		if nonceUTXO.RawTxTemplate != "" {
-			templateRef = &challenge.TemplateRef{
-				RawTxHex:  nonceUTXO.RawTxTemplate,
-				PriceSats: nonceUTXO.TemplatePriceSats,
-			}
+	nonceUTXO, err := cfg.NoncePool.Lease()
+	if err != nil {
+		logger.Error("no nonce UTXOs available", "error", err)
+		writeError(w, HTTPStatusForError(ErrNoUTXOsAvailable), string(ErrNoUTXOsAvailable),
+			"no nonce UTXOs available for challenge")
+		return
+	}
+	nonceRef := &challenge.NonceRef{
+		TxID:             nonceUTXO.TxID,
+		Vout:             nonceUTXO.Vout,
+		Satoshis:         nonceUTXO.Satoshis,
+		LockingScriptHex: nonceUTXO.Script,
+	}
+
+	// Profile B: include pre-signed template if available
+	var templateRef *challenge.TemplateRef
+	if nonceUTXO.RawTxTemplate != "" {
+		templateRef = &challenge.TemplateRef{
+			RawTxHex:  nonceUTXO.RawTxTemplate,
+			PriceSats: nonceUTXO.TemplatePriceSats,
 		}
 	}
 
@@ -173,8 +179,23 @@ func handleChallenge(w http.ResponseWriter, r *http.Request, cfg Config, logger 
 }
 
 // handleProof verifies a payment proof and gates the response.
+//
+// Verification order follows invariant V-1 (protocol-invariants.md):
+//   1. Decode proof
+//   2. Validate version + scheme
+//   3. Recompute and validate challenge hash
+//   4. Validate request binding
+//   5. Check expiry
+//   6. Decode transaction and verify txid
+//   7. Verify nonce spend
+//   8. Verify payee output
+//   9. Verify mempool acceptance (if required)
+//
+// Defence-in-depth replay cache check runs before step 3 as a fast-path
+// optimisation but is NOT a correctness gate — the settlement layer
+// provides the authoritative replay protection (invariant R-1/R-2).
 func handleProof(w http.ResponseWriter, r *http.Request, next http.Handler, proofHeader string, cfg Config, logger *slog.Logger) {
-	// Step 1: Parse the proof
+	// ── V-1 Step 1: Decode the proof object ─────────────────────────────
 	proof, err := ParseProof(proofHeader)
 	if err != nil {
 		logger.Warn("invalid proof header", "error", err)
@@ -182,10 +203,10 @@ func handleProof(w http.ResponseWriter, r *http.Request, next http.Handler, proo
 		return
 	}
 
-	// Step 2: Validate version and scheme
+	// ── V-1 Step 2: Validate version and scheme ─────────────────────────
 	if proof.V != challenge.Version {
 		writeError(w, HTTPStatusForError(ErrInvalidVersion), string(ErrInvalidVersion),
-			fmt.Sprintf("got version %q, want %q", proof.V, challenge.Version))
+			fmt.Sprintf("got version %d, want %d", proof.V, challenge.Version))
 		return
 	}
 	if proof.Scheme != challenge.Scheme {
@@ -194,169 +215,150 @@ func handleProof(w http.ResponseWriter, r *http.Request, next http.Handler, proo
 		return
 	}
 
-	// Step 3: Decode the raw transaction from base64
-	rawTxBytes, err := base64.StdEncoding.DecodeString(proof.RawTxB64)
-	if err != nil {
-		writeError(w, HTTPStatusForError(ErrInvalidProof), string(ErrInvalidProof), "invalid rawtx_b64")
-		return
-	}
-
-	tx, err := transaction.NewTransactionFromBytes(rawTxBytes)
-	if err != nil {
-		writeError(w, HTTPStatusForError(ErrInvalidProof), string(ErrInvalidProof), "cannot parse transaction")
-		return
-	}
-
-	// Step 4: Compute txid and compare to proof.txid (constant-time)
-	computedTxID := tx.TxID().String()
-	if proof.TxID != "" && !constantTimeEqual(proof.TxID, computedTxID) {
-		writeError(w, HTTPStatusForError(ErrInvalidProof), string(ErrInvalidProof),
-			fmt.Sprintf("txid mismatch: proof=%s, computed=%s", proof.TxID, computedTxID))
-		return
-	}
-
-	// Step 5: Verify transaction has inputs
-	if tx.InputCount() < 1 {
-		writeError(w, HTTPStatusForError(ErrInvalidProof), string(ErrInvalidProof), "transaction has no inputs")
-		return
-	}
-
-	// Step 6: Look up original challenge (needed for nonce outpoint + binding verification)
+	// ── V-1 Step 3: Recompute and validate challenge hash ───────────────
+	// Look up original challenge from cache using proof.ChallengeSHA256.
 	var originalChallenge *challenge.Challenge
 	if cfg.ChallengeCache != nil {
 		originalChallenge = cfg.ChallengeCache.Lookup(proof.ChallengeSHA256)
 	}
 
-	// Step 7: Replay check using nonce outpoint from the challenge (constant-time)
+	// Defence-in-depth: replay cache fast-path (NOT a correctness gate).
+	// Per R-2: "Servers MUST NOT rely on persistent nonce tracking for
+	// replay protection correctness." This is an optimisation only — the
+	// settlement layer provides authoritative replay protection via UTXO
+	// single-spend (R-1). The fast-path avoids redundant tx decode/verify
+	// for known-good idempotent re-serves and known-bad double-spends.
 	if cfg.ReplayCache != nil && originalChallenge != nil && originalChallenge.NonceUTXO != nil {
 		nonce := originalChallenge.NonceUTXO
 		if existingTxID, _, found := cfg.ReplayCache.Check(nonce.TxID, nonce.Vout); found {
-			if constantTimeEqual(existingTxID, computedTxID) {
-				// Same tx — idempotent re-serve, but must still enforce mempool
-				// semantics when require_mempool_accept is true.
-				logger.Info("idempotent re-serve",
-					"txid", computedTxID,
-					"nonce", fmt.Sprintf("%s:%d", nonce.TxID, nonce.Vout),
-				)
-				receiptHash := computeReceiptHash(computedTxID, proof.ChallengeSHA256)
-				w.Header().Set(ReceiptHeader, receiptHash)
-				w.Header().Set("X402-Receipt-Time", time.Now().UTC().Format(time.RFC3339))
+			// Compute txid early for this fast-path only.
+			fastRawTx, decErr := base64.StdEncoding.DecodeString(proof.Payment.RawTxB64)
+			if decErr == nil {
+				fastTx, parseErr := transaction.NewTransactionFromBytes(fastRawTx)
+				if parseErr == nil {
+					fastTxID := fastTx.TxID().String()
+					if constantTimeEqual(existingTxID, fastTxID) {
+						// Same tx — idempotent re-serve, enforce mempool if required.
+						logger.Info("idempotent re-serve",
+							"txid", fastTxID,
+							"nonce", fmt.Sprintf("%s:%d", nonce.TxID, nonce.Vout),
+						)
+						receiptHash := computeReceiptHash(fastTxID, proof.ChallengeSHA256)
+						w.Header().Set(ReceiptHeader, receiptHash)
+						w.Header().Set("X402-Receipt-Time", time.Now().UTC().Format(time.RFC3339))
 
-				if originalChallenge.RequireMempoolAccept {
-					if cfg.MempoolChecker == nil {
-						logger.Error("require_mempool_accept but no MempoolChecker configured", "txid", computedTxID)
-						w.Header().Set(StatusHeader, "error")
-						writeError(w, HTTPStatusForError(ErrMempoolError), string(ErrMempoolError),
-							"mempool verification required but not configured")
-						return
-					}
-					visible, doubleSpend, mErr := cfg.MempoolChecker.CheckMempool(computedTxID)
-					if mErr != nil {
-						logger.Error("mempool check failed on re-serve", "txid", computedTxID, "error", mErr)
-						w.Header().Set(StatusHeader, "error")
-						writeError(w, HTTPStatusForError(ErrMempoolError), string(ErrMempoolError),
-							fmt.Sprintf("mempool verification failed: %s", mErr))
-						return
-					}
-					if doubleSpend {
-						logger.Warn("mempool double-spend on re-serve", "txid", computedTxID)
-						w.Header().Set(StatusHeader, "rejected")
-						writeError(w, HTTPStatusForError(ErrDoubleSpend), string(ErrDoubleSpend),
-							"transaction rejected by mempool as double-spend")
-						return
-					}
-					if !visible {
-						logger.Info("re-serve: payment pending (not yet in mempool)", "txid", computedTxID)
-						w.Header().Set(StatusHeader, "pending")
+						if originalChallenge.RequireMempoolAccept {
+							if cfg.MempoolChecker == nil {
+								logger.Error("require_mempool_accept but no MempoolChecker configured", "txid", fastTxID)
+								w.Header().Set(StatusHeader, "error")
+								writeError(w, HTTPStatusForError(ErrMempoolError), string(ErrMempoolError),
+									"mempool verification required but not configured")
+								return
+							}
+							visible, doubleSpend, mErr := cfg.MempoolChecker.CheckMempool(fastTxID)
+							if mErr != nil {
+								logger.Error("mempool check failed on re-serve", "txid", fastTxID, "error", mErr)
+								w.Header().Set(StatusHeader, "error")
+								writeError(w, HTTPStatusForError(ErrMempoolError), string(ErrMempoolError),
+									fmt.Sprintf("mempool verification failed: %s", mErr))
+								return
+							}
+							if doubleSpend {
+								logger.Warn("mempool double-spend on re-serve", "txid", fastTxID)
+								w.Header().Set(StatusHeader, "rejected")
+								writeError(w, HTTPStatusForError(ErrDoubleSpend), string(ErrDoubleSpend),
+									"transaction rejected by mempool as double-spend")
+								return
+							}
+							if !visible {
+								logger.Info("re-serve: payment pending (not yet in mempool)", "txid", fastTxID)
+								w.Header().Set(StatusHeader, "pending")
+								w.Header().Set("Content-Type", "application/json")
+								w.WriteHeader(http.StatusAccepted)
+								json.NewEncoder(w).Encode(map[string]any{
+									"status":  202,
+									"code":    string(ErrMempoolPending),
+									"message": "transaction not yet visible in mempool",
+									"txid":    fastTxID,
+								})
+								return
+							}
+						}
+
+						// Re-verify request binding even on re-serve.
+						// Without this, an attacker could replay a valid proof
+						// against a different endpoint on the same server.
+						reserveBindHeaders := cfg.BindHeaders
+						if len(reserveBindHeaders) == 0 {
+							reserveBindHeaders = HeaderAllowlist
+						}
+						if bindErr := challenge.VerifyBinding(originalChallenge, r, reserveBindHeaders); bindErr != nil {
+							logger.Warn("binding mismatch on re-serve", "error", bindErr)
+							writeError(w, HTTPStatusForError(ErrInvalidBinding), string(ErrInvalidBinding), bindErr.Error())
+							return
+						}
+
+						// Idempotent re-serve: the resource was already executed
+						// on the original proof submission. Return receipt-only
+						// confirmation WITHOUT re-executing the downstream handler.
+						// This prevents duplicate execution under concurrent retry.
+						if cfg.ChallengeCache != nil {
+							cfg.ChallengeCache.Delete(proof.ChallengeSHA256)
+						}
+						if cfg.NoncePool != nil {
+							cfg.NoncePool.MarkSpent(nonce.TxID, nonce.Vout)
+						}
+						w.Header().Set(StatusHeader, "accepted")
+						w.Header().Set(AmountHeader, fmt.Sprintf("%d", originalChallenge.AmountSats))
 						w.Header().Set("Content-Type", "application/json")
-						w.WriteHeader(http.StatusAccepted)
+						w.WriteHeader(http.StatusOK)
 						json.NewEncoder(w).Encode(map[string]any{
-							"status":  202,
-							"code":    string(ErrMempoolPending),
-							"message": "transaction not yet visible in mempool",
-							"txid":    computedTxID,
+							"status":  200,
+							"code":    "already_settled",
+							"message": "payment already accepted",
+							"txid":    fastTxID,
 						})
 						return
 					}
+					// Different txid — hint at double-spend but fall through to
+					// full V-1 verification. The settlement layer is authoritative.
+					logger.Warn("replay cache hint: possible double-spend",
+						"nonce", fmt.Sprintf("%s:%d", nonce.TxID, nonce.Vout),
+						"existing_txid", existingTxID,
+						"proof_txid", fastTxID,
+					)
+					// Fall through to full verification — do NOT reject based on
+					// cache alone (invariant R-2).
 				}
-
-				// Idempotent re-serve succeeded — delete challenge from cache (single-use)
-				if cfg.ChallengeCache != nil {
-					cfg.ChallengeCache.Delete(proof.ChallengeSHA256)
-				}
-				// Mark nonce as spent so it's never re-leased for a new challenge.
-				// Without this, the lease TTL expiry would return the nonce to "available"
-				// even though it's been spent on-chain → subsequent broadcasts fail.
-				if cfg.NoncePool != nil {
-					cfg.NoncePool.MarkSpent(nonce.TxID, nonce.Vout)
-				}
-				w.Header().Set(StatusHeader, "accepted")
-				w.Header().Set(AmountHeader, fmt.Sprintf("%d", originalChallenge.AmountSats))
-				next.ServeHTTP(w, r)
-				return
 			}
-			// Different txid — nonce already consumed by another tx (double-spend attempt)
-			logger.Warn("replay detected at gatekeeper",
-				"nonce", fmt.Sprintf("%s:%d", nonce.TxID, nonce.Vout),
-				"existing_txid", existingTxID,
-				"proof_txid", computedTxID,
-			)
-			w.Header().Set(StatusHeader, "rejected")
-			writeError(w, HTTPStatusForError(ErrDoubleSpend), string(ErrDoubleSpend),
-				fmt.Sprintf("nonce already spent in tx %s", existingTxID))
-			return
 		}
 	}
 
-	// Step 8: If no original challenge found (expired or unknown), reject
 	if originalChallenge == nil {
 		writeError(w, HTTPStatusForError(ErrChallengeNotFound), string(ErrChallengeNotFound),
 			"challenge not found or expired")
 		return
 	}
 
-	// Step 9: Validate scheme and version on the challenge
-	if err := challenge.ValidateSchemeVersion(originalChallenge); err != nil {
-		logger.Warn("challenge scheme/version mismatch", "error", err)
-		if originalChallenge.Scheme != challenge.Scheme {
-			writeError(w, HTTPStatusForError(ErrInvalidScheme), string(ErrInvalidScheme), err.Error())
-		} else {
-			writeError(w, HTTPStatusForError(ErrInvalidVersion), string(ErrInvalidVersion), err.Error())
-		}
+	// Per spec §7: "The server MUST recompute challenge_sha256 and MUST compare
+	// it to the provided value."
+	recomputedHash, err := challenge.ComputeHash(originalChallenge)
+	if err != nil {
+		logger.Error("failed to recompute challenge hash", "error", err)
+		writeError(w, http.StatusInternalServerError, string(ErrInternalError), "failed to recompute challenge hash")
+		return
+	}
+	if !constantTimeEqual(recomputedHash, proof.ChallengeSHA256) {
+		logger.Warn("challenge_sha256 mismatch",
+			"proof", proof.ChallengeSHA256,
+			"recomputed", recomputedHash,
+		)
+		writeError(w, HTTPStatusForError(ErrInvalidProof), string(ErrInvalidProof),
+			"challenge_sha256 does not match recomputed value")
 		return
 	}
 
-	// Step 10: Check challenge expiry
-	if originalChallenge.ExpiresAt <= time.Now().Unix() {
-		writeError(w, HTTPStatusForError(ErrExpiredChallenge), string(ErrExpiredChallenge),
-			"challenge has expired")
-		return
-	}
-
-	// Step 11: Verify nonce spend — the tx MUST consume the nonce outpoint
-	if originalChallenge.NonceUTXO != nil {
-		if err := verifyNonceSpend(tx, originalChallenge.NonceUTXO); err != nil {
-			logger.Warn("nonce spend verification failed", "error", err)
-			writeError(w, HTTPStatusForError(ErrNonceMissing), string(ErrNonceMissing), err.Error())
-			return
-		}
-
-		// Step 11b: For Profile B (template mode), verify nonce is at input[0].
-		// SIGHASH_SINGLE binds the signature to output[input_index], so the nonce
-		// input at index 0 commits to output[0] (the payee output). If the nonce
-		// were at a different index, the gateway's 0xC3 signature would lock the
-		// wrong output — which is consensus-invalid, but we catch it here early
-		// with a clear error for defence-in-depth.
-		if originalChallenge.Template != nil {
-			if err := verifyNonceAtInput0(tx, originalChallenge.NonceUTXO); err != nil {
-				logger.Warn("nonce position verification failed (template mode)", "error", err)
-				writeError(w, HTTPStatusForError(ErrNonceMissing), string(ErrNonceMissing), err.Error())
-				return
-			}
-		}
-	}
-
-	// Step 12: Verify request binding
+	// ── V-1 Step 4: Validate request binding ────────────────────────────
 	bindHeaders := cfg.BindHeaders
 	if len(bindHeaders) == 0 {
 		bindHeaders = HeaderAllowlist
@@ -367,24 +369,138 @@ func handleProof(w http.ResponseWriter, r *http.Request, next http.Handler, proo
 		return
 	}
 
-	// Step 13: Confirm tx has output paying >= amount_sats to payee
+	// ── V-1 Step 5: Check expiration ────────────────────────────────────
+	// Per spec §7: "The server MUST reject proofs for challenges where the
+	// current time is strictly greater than expires_at."
+	if time.Now().Unix() > originalChallenge.ExpiresAt {
+		writeError(w, HTTPStatusForError(ErrExpiredChallenge), string(ErrExpiredChallenge),
+			"challenge has expired")
+		return
+	}
+
+	// ── V-1 Step 6: Decode the transaction and verify txid ──────────────
+	rawTxBytes, err := base64.StdEncoding.DecodeString(proof.Payment.RawTxB64)
+	if err != nil {
+		writeError(w, HTTPStatusForError(ErrInvalidProof), string(ErrInvalidProof), "invalid payment.rawtx_b64")
+		return
+	}
+
+	tx, err := transaction.NewTransactionFromBytes(rawTxBytes)
+	if err != nil {
+		writeError(w, HTTPStatusForError(ErrInvalidProof), string(ErrInvalidProof), "cannot parse transaction")
+		return
+	}
+
+	// Per spec §5/§6: payment.txid MUST match the decoded transaction bytes.
+	computedTxID := tx.TxID().String()
+	if !constantTimeEqual(proof.Payment.TxID, computedTxID) {
+		writeError(w, HTTPStatusForError(ErrInvalidProof), string(ErrInvalidProof),
+			fmt.Sprintf("txid mismatch: proof=%s, computed=%s", proof.Payment.TxID, computedTxID))
+		return
+	}
+
+	if tx.InputCount() < 1 {
+		writeError(w, HTTPStatusForError(ErrInvalidProof), string(ErrInvalidProof), "transaction has no inputs")
+		return
+	}
+
+	// ── V-1 Step 7: Verify nonce UTXO is spent ─────────────────────────
+	// Per spec §4: nonce_utxo MUST identify a specific UTXO.
+	// Per spec §6: "The transaction MUST include an input whose outpoint exactly
+	// matches the nonce_utxo."
+	if originalChallenge.NonceUTXO == nil {
+		logger.Error("challenge missing nonce_utxo (violates spec §4)")
+		writeError(w, HTTPStatusForError(ErrNonceMissing), string(ErrNonceMissing),
+			"challenge has no nonce_utxo")
+		return
+	}
+	if err := verifyNonceSpend(tx, originalChallenge.NonceUTXO); err != nil {
+		logger.Warn("nonce spend verification failed", "error", err)
+		writeError(w, HTTPStatusForError(ErrNonceMissing), string(ErrNonceMissing), err.Error())
+		return
+	}
+
+	// Profile B (template mode): verify nonce is at input[0].
+	// SIGHASH_SINGLE binds the signature to output[input_index], so the nonce
+	// input at index 0 commits to output[0] (the payee output).
+	if originalChallenge.Template != nil {
+		if err := verifyNonceAtInput0(tx, originalChallenge.NonceUTXO); err != nil {
+			logger.Warn("nonce position verification failed (template mode)", "error", err)
+			writeError(w, HTTPStatusForError(ErrNonceMissing), string(ErrNonceMissing), err.Error())
+			return
+		}
+	}
+
+	// ── V-1 Step 8: Verify the payment output ───────────────────────────
 	if err := verifyPayeeOutput(tx, originalChallenge.PayeeLockingScriptHex, originalChallenge.AmountSats); err != nil {
 		logger.Warn("payee output verification failed", "error", err)
 		writeError(w, HTTPStatusForError(ErrInvalidPayee), string(ErrInvalidPayee), err.Error())
 		return
 	}
 
-	// Step 14: Challenge cache deletion is deferred until the final 200 response.
-	// If we deleted here unconditionally, a 202 (payment pending) response would
-	// prevent the client from polling — on retry the challenge would be gone,
-	// causing "challenge_not_found". Instead, the challenge stays in cache until
-	// mempool acceptance is confirmed (200), or until it expires naturally (TTL).
-	// The replay cache (Step 15) provides replay protection in the interim.
-
-	// Step 15: Record in replay cache (nonce outpoint → txid + challenge hash)
+	// Step 15: Atomically reserve this nonce in the replay cache to prevent
+	// concurrent duplicate execution. TryReserve is atomic (single mutex) —
+	// if two goroutines race, exactly one wins the reservation.
+	// `reserved` is hoisted to function scope so the commit at the end can clear it.
+	var reserved bool
 	if cfg.ReplayCache != nil && originalChallenge.NonceUTXO != nil {
 		nonce := originalChallenge.NonceUTXO
-		cfg.ReplayCache.Record(nonce.TxID, nonce.Vout, computedTxID, proof.ChallengeSHA256)
+		var existingTxID string
+		var pending bool
+		reserved, existingTxID, pending = cfg.ReplayCache.TryReserve(nonce.TxID, nonce.Vout, proof.ChallengeSHA256)
+		if !reserved {
+			if pending {
+				// Another goroutine is processing this nonce right now.
+				// Return 202 to tell the client to retry shortly.
+				logger.Info("concurrent proof processing in progress",
+					"nonce", fmt.Sprintf("%s:%d", nonce.TxID, nonce.Vout))
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Retry-After", "1")
+				w.WriteHeader(http.StatusAccepted)
+				json.NewEncoder(w).Encode(map[string]any{
+					"status":  202,
+					"code":    string(ErrMempoolPending),
+					"message": "proof verification in progress, retry shortly",
+				})
+				return
+			}
+			// Already committed — idempotent receipt or double-spend.
+			if existingTxID != "" {
+				if constantTimeEqual(existingTxID, computedTxID) {
+					// Same txid already committed — return receipt-only
+					// response without re-executing downstream handler.
+					receiptHash := computeReceiptHash(computedTxID, proof.ChallengeSHA256)
+					w.Header().Set(ReceiptHeader, receiptHash)
+					w.Header().Set(StatusHeader, "accepted")
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusOK)
+					json.NewEncoder(w).Encode(map[string]any{
+						"status":  200,
+						"code":    "already_settled",
+						"message": "payment already accepted",
+						"txid":    computedTxID,
+					})
+					return
+				}
+				logger.Warn("nonce already committed with different txid",
+					"nonce", fmt.Sprintf("%s:%d", nonce.TxID, nonce.Vout),
+					"existing_txid", existingTxID,
+					"proof_txid", computedTxID,
+				)
+				// Fall through — mempool checker will catch the double-spend.
+			}
+		}
+		// If reserved, we own this nonce slot. Commit after mempool acceptance,
+		// or release on failure.
+		defer func() {
+			if reserved {
+				// If we reach here without having committed, release the reservation.
+				// This happens on 202 (pending), 503 (error), etc.
+				cfg.ReplayCache.Release(nonce.TxID, nonce.Vout, proof.ChallengeSHA256)
+			}
+		}()
+		// Mark reserved=false after successful commit to prevent deferred release.
+		_ = reserved // used by deferred function
 	}
 
 	// Step 15b: Mark nonce UTXO as spent immediately after replay-cache recording.
@@ -508,6 +624,20 @@ func handleProof(w http.ResponseWriter, r *http.Request, next http.Handler, proo
 			"vout", payeeVout,
 			"satoshis", payeeSats,
 		)
+	}
+
+	// Commit the replay cache reservation now that payment is fully accepted.
+	// This transitions the pending entry to committed (spendTxID set), making
+	// it visible to subsequent Check() calls for idempotent re-serve.
+	// Setting reserved=false prevents the deferred Release from firing.
+	if cfg.ReplayCache != nil && originalChallenge.NonceUTXO != nil {
+		nonce := originalChallenge.NonceUTXO
+		if commitErr := cfg.ReplayCache.Commit(nonce.TxID, nonce.Vout, proof.ChallengeSHA256, computedTxID); commitErr != nil {
+			// Non-fatal: replay cache commit failed but payment is valid.
+			// The settlement layer provides authoritative replay protection.
+			logger.Warn("replay cache commit failed (non-fatal)", "error", commitErr)
+		}
+		reserved = false // prevent deferred Release
 	}
 
 	logger.Info("payment accepted",
