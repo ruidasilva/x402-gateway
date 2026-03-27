@@ -795,6 +795,26 @@ func main() {
 	mux.Handle("GET /v1/expensive", gatekeeper.Middleware(gatekeeperCfg)(expensive))
 	mux.Handle("POST /v1/expensive", gatekeeper.Middleware(gatekeeperCfg)(expensive))
 
+	// --- Demo endpoint: /api/weather (1 sat, deterministic JSON) ---
+	weatherCfg := gatekeeperCfg
+	weatherCfg.PricingFunc = pricing.Fixed(1)
+
+	weather := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"location":    "San Francisco, CA",
+			"temperature": 18,
+			"unit":        "celsius",
+			"condition":   "partly cloudy",
+			"wind_kph":    12,
+			"humidity":    65,
+			"price_sats":  1,
+			"note":        "This response was gated by x402. You paid 1 satoshi.",
+		})
+	})
+
+	mux.Handle("GET /api/weather", gatekeeper.Middleware(weatherCfg)(weather))
+
 	// --- Fee delegator API (only when embedded) ---
 	if cfg.DelegatorEmbedded && feeDelegatorHandler != nil {
 		mux.HandleFunc("POST /api/v1/tx", feeDelegatorHandler.HandleDelegateTx())
@@ -908,6 +928,7 @@ func main() {
 	fmt.Printf("\n  Endpoints:\n")
 	fmt.Printf("    GET  /health          Health check\n")
 	fmt.Printf("    GET  /v1/expensive    Protected (100 sats)\n")
+	fmt.Printf("    GET  /api/weather     Demo endpoint (1 sat)\n")
 	if cfg.DelegatorEmbedded {
 		fmt.Printf("    POST /delegate/x402   Delegation (embedded)\n")
 		fmt.Printf("    POST /api/v1/tx       Fee delegator API\n")
