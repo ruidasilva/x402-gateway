@@ -91,8 +91,8 @@ async function main() {
   console.log(`\nStep 2: Challenge decoded`)
   console.log(`  Amount:  ${challenge.amount_sats} sat`)
   console.log(`  Path:    ${challenge.path}`)
-  console.log(`  Nonce:   ${challenge.nonce_utxo.txid.slice(0, 16)}...`)
-  console.log(`  Hash:    ${challengeHash.slice(0, 24)}...`)
+  console.log(`  Nonce:   ${challenge.nonce_utxo.txid}:${challenge.nonce_utxo.vout}`)
+  console.log(`  Hash:    ${challengeHash}`)
 
   if (!challenge.template) {
     console.log(`\n  ⚠ No template in challenge (Profile A). This demo requires Profile B.`)
@@ -120,7 +120,7 @@ async function main() {
   const deleg = await delegRes.json()
   const completedTxHex = deleg.completed_tx
   const txid = deleg.txid
-  console.log(`  TxID:    ${txid.slice(0, 24)}...`)
+  console.log(`  TxID:    ${txid}`)
 
   // ── Step 4: Broadcast to BSV network ─────────────────────────────────
   // The CLIENT must broadcast (never the server or delegator).
@@ -135,7 +135,7 @@ async function main() {
 
   if (bcastRes && bcastRes.ok) {
     const bcastTxid = (await bcastRes.text()).replace(/^"|"$/g, "").trim()
-    console.log(`  → Broadcast accepted: ${bcastTxid.slice(0, 24)}...`)
+    console.log(`  → Broadcast accepted: ${bcastTxid}`)
   } else if (bcastRes) {
     const errText = await bcastRes.text()
     // "Transaction already in the mempool" is OK — means it was already broadcast
@@ -201,7 +201,7 @@ async function main() {
     console.log(`  ${JSON.stringify(data, null, 2).split("\n").join("\n  ")}`)
 
     const receipt = res2.headers.get("x402-receipt")
-    if (receipt) console.log(`\n  Receipt: ${receipt.slice(0, 24)}...`)
+    if (receipt) console.log(`\n  Receipt: ${receipt}`)
   } else {
     const body = await res2.text()
     console.log(`\n  ✗ Payment failed: ${body}`)

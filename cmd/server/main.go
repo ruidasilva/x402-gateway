@@ -795,8 +795,12 @@ func main() {
 	mux.Handle("GET /v1/expensive", gatekeeper.Middleware(gatekeeperCfg)(expensive))
 	mux.Handle("POST /v1/expensive", gatekeeper.Middleware(gatekeeperCfg)(expensive))
 
-	// --- Demo endpoint: /api/weather (same price as template) ---
+	// --- Demo endpoint: /api/weather ---
+	// Price is 1 sat. The nonce pool's templates have price_sats=100 baked in,
+	// but that's the output amount in the pre-signed tx — it overpays relative
+	// to amount_sats=1. Spec §6 allows this: "greater than or equal to amount_sats".
 	weatherCfg := gatekeeperCfg
+	weatherCfg.PricingFunc = pricing.Fixed(1)
 
 	weather := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
