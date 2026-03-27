@@ -342,6 +342,27 @@ func main() {
 	}
 	bcast := broadcast.NewSwappable(inner, cfg.Broadcaster)
 
+	// ── Demo mode diagnostics ──────────────────────────────────────────
+	// Explicit validation to prevent silent regressions when demo config
+	// is incomplete. These warnings surface immediately on startup.
+	if demoMode {
+		fmt.Println("  ⚡ Running in DEMO mode (mock broadcaster, no real network)")
+		if !cfg.TemplateMode {
+			fmt.Println("  ⚠ WARNING: TEMPLATE_MODE=false — Playground will fail (Profile B required)")
+		}
+		if !cfg.DelegatorEmbedded {
+			fmt.Println("  ⚠ WARNING: DELEGATOR_EMBEDDED=false — full flow cannot complete")
+		}
+		if cfg.TreasuryPollInterval > 0 {
+			fmt.Println("  ⚠ WARNING: TREASURY polling enabled in demo — may cause external calls")
+		}
+	}
+	if cfg.TemplateMode {
+		fmt.Println("  Profile: B (Gateway Template)")
+	} else {
+		fmt.Println("  Profile: A (Open Nonce)")
+	}
+
 	// Connect to Redis if enabled (needed for pools and/or treasury watcher)
 	var rdb *redis.Client
 	if cfg.RedisEnabled {

@@ -56,6 +56,17 @@ BROADCASTER=mock
 
 # Redis (set to true for production with persistent UTXO pools)
 REDIS_ENABLED=false
+
+# Template mode: Profile B (gateway pre-signs nonce input, delegator adds fee)
+# Required for Developer Playground "Run Full Flow"
+TEMPLATE_MODE=true
+TEMPLATE_PRICE_SATS=100
+
+# Embedded delegator (handles /delegate/x402 without a separate process)
+DELEGATOR_EMBEDDED=true
+
+# Disable treasury watcher in demo (no external API calls)
+TREASURY_POLL_INTERVAL=0
 `, wif)
 
 	if err := os.WriteFile(".env", []byte(envContent), 0600); err != nil {
