@@ -38,6 +38,19 @@ jobs:
       - name: Test
         run: go test ./... -v -count=1
 
+      - name: Regression guard (no BTC dust assumptions)
+        run: |
+          # Fail if any Go source file contains a hardcoded 546-sat dust threshold.
+          # Documentation and test files that explain the removal are excluded.
+          if grep -rn '> 546\|>= 546\|> 547\|dust_threshold\|dustThreshold\|DUST_LIMIT' \
+               --include='*.go' \
+               --exclude='*_test.go' \
+               internal/ cmd/; then
+            echo "ERROR: BTC dust threshold found in source code. BSV has no dust limit."
+            exit 1
+          fi
+          echo "No BTC dust assumptions found."
+
   dashboard:
     name: Dashboard
     runs-on: ubuntu-latest

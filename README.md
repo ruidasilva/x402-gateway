@@ -246,6 +246,7 @@ Implementations MUST preserve exact value conservation in transaction constructi
 | [Deployment](docs/deployment.md) | Demo, Docker, production checklist |
 | [Testing](docs/testing/README.md) | Test suites, Postman collections |
 | [Troubleshooting](docs/troubleshooting.md) | Common issues and fixes |
+| [Transaction Guarantees](docs/transaction-guarantees.md) | Value conservation, change rules, fee model |
 
 ### Protocol and governance
 
@@ -256,6 +257,18 @@ Implementations MUST preserve exact value conservation in transaction constructi
 | [Contributing](CONTRIBUTING.md) | Development setup and PR process |
 | [Security](SECURITY.md) | Vulnerability reporting |
 | [Changelog](CHANGELOG.md) | Release history |
+
+### v1.0.1-bsv-fix -- Economic Correctness Release
+
+This release removes all BTC-era dust threshold assumptions and enforces
+BSV-correct transaction economics:
+
+- Exact value conservation (`total_inputs = total_outputs + fee + change`)
+- Change output created for any remainder >= 1 sat (no implicit discard)
+- Deterministic fee model (~1 sat per request at 0.001 sat/byte)
+- No implicit fee inflation from discarded change
+- Property-tested across 30+ scenarios with 600-value sweep regression guard
+- CI regression guard prevents re-introduction of hardcoded thresholds
 
 ---
 

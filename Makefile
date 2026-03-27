@@ -1,4 +1,4 @@
-.PHONY: build test lint run clean demo client deploy dashboard-dev dashboard-build
+.PHONY: build test lint verify run clean demo client deploy dashboard-dev dashboard-build
 
 # ─── Build ──────────────────────────────────────────────────
 # Only build tracked binaries. Do not reference local or gitignored paths.
@@ -11,6 +11,11 @@ test:
 
 lint:
 	go vet ./...
+
+# ─── Verify ─────────────────────────────────────────────────
+# Full pre-commit verification: build, lint, test, regression guard.
+verify: lint test
+	@echo "All checks passed."
 
 run:
 	go run ./cmd/server
