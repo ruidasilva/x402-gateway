@@ -69,6 +69,15 @@ type wocUnspent struct {
 	Value  int64  `json:"value"`
 }
 
+// wocConfirmedResponse wraps WoC's /confirmed/unspent response.
+// This endpoint returns {"address":"...","result":[...],"error":""}
+// rather than a bare array.
+type wocConfirmedResponse struct {
+	Address string       `json:"address"`
+	Result  []wocUnspent `json:"result"`
+	Error   string       `json:"error"`
+}
+
 // TreasuryWatcher polls WhatsOnChain for unspent UTXOs at the treasury address
 // and stores them in Redis (persistent) with an in-memory read cache.
 // Falls back to in-memory only when Redis is not available.
@@ -252,10 +261,32 @@ func (tw *TreasuryWatcher) poll() error {
 		return tw.lastErr
 	}
 
+	// /confirmed/unspent returns wrapped object: {"address":"...","result":[...],"error":""}
+	// /unspent returns bare array: [{...}]
+	// Try wrapped format first, fall back to bare array for compatibility.
 	var items []wocUnspent
-	if err := json.Unmarshal(body, &items); err != nil {
+	var wrapped wocConfirmedResponse
+	if err := json.Unmarshal(body, &wrapped); err == nil && (wrapped.Address != "" || wrapped.Result != nil || wrapped.Error != "") {
+		// Successfully parsed as wrapped format.
+		if wrapped.Error != "" {
+			tw.mu.Lock()
+			tw.lastErr = fmt.Errorf("WoC API error: %s", wrapped.Error)
+			tw.mu.Unlock()
+			return tw.lastErr
+		}
+		items = wrapped.Result
+	} else if err2 := json.Unmarshal(body, &items); err2 != nil {
+		previewLen := len(body)
+		if previewLen > 200 {
+			previewLen = 200
+		}
+		tw.logger.Error("WoC parse failed",
+			"endpoint", url,
+			"address", tw.address,
+			"body_preview", string(body[:previewLen]),
+		)
 		tw.mu.Lock()
-		tw.lastErr = fmt.Errorf("parse WoC response: %w", err)
+		tw.lastErr = fmt.Errorf("parse WoC response (wrapped + array failed): %w", err2)
 		tw.mu.Unlock()
 		return tw.lastErr
 	}

@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -186,17 +187,89 @@ func TestGetFundingNone(t *testing.T) {
 }
 
 func TestMalformedJSONResponse(t *testing.T) {
-	// WoC returning malformed JSON MUST be treated as error.
-	// The watcher must NOT silently clear UTXOs on parse failure.
+	// Truly malformed JSON must be treated as error.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"error": "not an array"}`))
+		w.Write([]byte(`not valid json at all`))
 	}))
 	defer srv.Close()
 
 	tw := newTestWatcher(t, srv.URL)
 	if err := tw.poll(); err == nil {
-		t.Fatal("poll should return error on malformed JSON (object instead of array), but got nil")
+		t.Fatal("poll should return error on malformed JSON")
+	}
+}
+
+func TestWrappedConfirmedResponse(t *testing.T) {
+	// WoC /confirmed/unspent returns {"address":"...","result":[...],"error":""}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"address": "1TestAddress",
+			"result": []map[string]any{
+				{"height": 942228, "tx_pos": 0, "tx_hash": "aaaa" + strings.Repeat("0", 60), "value": 100},
+				{"height": 942229, "tx_pos": 1, "tx_hash": "bbbb" + strings.Repeat("0", 60), "value": 50000},
+			},
+			"error": "",
+		})
+	}))
+	defer srv.Close()
+
+	tw := newTestWatcher(t, srv.URL)
+	if err := tw.poll(); err != nil {
+		t.Fatalf("poll failed on wrapped response: %v", err)
+	}
+
+	utxos := tw.GetUTXOs()
+	if len(utxos) != 2 {
+		t.Fatalf("expected 2 UTXOs from wrapped response, got %d", len(utxos))
+	}
+	// Sorted descending by value
+	if utxos[0].Satoshis != 50000 {
+		t.Errorf("expected first UTXO 50000 sats, got %d", utxos[0].Satoshis)
+	}
+	if utxos[1].Satoshis != 100 {
+		t.Errorf("expected second UTXO 100 sats, got %d", utxos[1].Satoshis)
+	}
+}
+
+func TestWrappedErrorField(t *testing.T) {
+	// When WoC returns an error in the wrapped response, poll must fail.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"address": "1TestAddress",
+			"result":  nil,
+			"error":   "rate limit exceeded",
+		})
+	}))
+	defer srv.Close()
+
+	tw := newTestWatcher(t, srv.URL)
+	err := tw.poll()
+	if err == nil {
+		t.Fatal("expected error when WoC error field is populated")
+	}
+}
+
+func TestWrappedEmptyResult(t *testing.T) {
+	// Wrapped response with empty result array = valid, no UTXOs.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"address": "1TestAddress",
+			"result":  []map[string]any{},
+			"error":   "",
+		})
+	}))
+	defer srv.Close()
+
+	tw := newTestWatcher(t, srv.URL)
+	if err := tw.poll(); err != nil {
+		t.Fatalf("poll failed on empty wrapped result: %v", err)
+	}
+	if len(tw.GetUTXOs()) != 0 {
+		t.Fatalf("expected 0 UTXOs, got %d", len(tw.GetUTXOs()))
 	}
 }
 
