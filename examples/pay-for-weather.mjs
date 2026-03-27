@@ -122,22 +122,30 @@ async function main() {
   const txid = deleg.txid
   console.log(`  TxID:    ${txid.slice(0, 24)}...`)
 
-  // ── Step 4: Broadcast ───────────────────────────────────────────────
-  // In mock mode the gateway's MockBroadcaster accepts anything.
-  // In live mode this would go to the BSV network.
-  console.log(`\nStep 4: Broadcasting`)
-  const bcastRes = await fetch(`${BASE}/api/v1/broadcast`, {
+  // ── Step 4: Broadcast to BSV network ─────────────────────────────────
+  // The CLIENT must broadcast (never the server or delegator).
+  // Uses WhatsOnChain API for mainnet.
+  console.log(`\nStep 4: Broadcasting to BSV network`)
+  const WOC_BROADCAST = "https://api.whatsonchain.com/v1/bsv/main/tx/raw"
+  const bcastRes = await fetch(WOC_BROADCAST, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ txhex: completedTxHex }),
-  }).catch(() => null)
+  }).catch(e => { console.log(`  → Broadcast error: ${e.message}`); return null })
 
-  // Broadcast may fail in demo mode (mock). That's okay — the gateway's
-  // mempool checker (also mock) will still accept the proof.
   if (bcastRes && bcastRes.ok) {
-    console.log(`  → Broadcast accepted`)
+    const bcastTxid = (await bcastRes.text()).replace(/^"|"$/g, "").trim()
+    console.log(`  → Broadcast accepted: ${bcastTxid.slice(0, 24)}...`)
+  } else if (bcastRes) {
+    const errText = await bcastRes.text()
+    // "Transaction already in the mempool" is OK — means it was already broadcast
+    if (errText.includes("already") || errText.includes("Missing inputs")) {
+      console.log(`  → Already known or mock mode (${errText.slice(0, 60)})`)
+    } else {
+      console.log(`  → Broadcast response ${bcastRes.status}: ${errText.slice(0, 80)}`)
+    }
   } else {
-    console.log(`  → Broadcast skipped (mock mode)`)
+    console.log(`  → Broadcast skipped`)
   }
 
   // ── Step 5: Build proof ─────────────────────────────────────────────
@@ -166,11 +174,23 @@ async function main() {
   console.log(`\nStep 5: Proof built`)
   console.log(`  Header:  ${proofHeader.slice(0, 40)}... (${proofHeader.length} chars)`)
 
-  // ── Step 6: Retry with proof ────────────────────────────────────────
+  // ── Step 6: Retry with proof (with mempool polling) ──────────────────
   console.log(`\nStep 6: Retry with X402-Proof`)
-  const res2 = await fetch(ENDPOINT, {
+  let res2 = await fetch(ENDPOINT, {
     headers: { "X402-Proof": proofHeader },
   })
+
+  // If 202 (pending), the tx hasn't propagated to mempool yet. Poll.
+  let retries = 0
+  while (res2.status === 202 && retries < 10) {
+    retries++
+    const wait = retries * 500
+    console.log(`  → 202 Pending (mempool propagation). Retrying in ${wait}ms...`)
+    await new Promise(r => setTimeout(r, wait))
+    res2 = await fetch(ENDPOINT, {
+      headers: { "X402-Proof": proofHeader },
+    })
+  }
 
   console.log(`  → ${res2.status} ${res2.statusText}`)
 

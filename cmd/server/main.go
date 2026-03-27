@@ -795,9 +795,8 @@ func main() {
 	mux.Handle("GET /v1/expensive", gatekeeper.Middleware(gatekeeperCfg)(expensive))
 	mux.Handle("POST /v1/expensive", gatekeeper.Middleware(gatekeeperCfg)(expensive))
 
-	// --- Demo endpoint: /api/weather (1 sat, deterministic JSON) ---
+	// --- Demo endpoint: /api/weather (same price as template) ---
 	weatherCfg := gatekeeperCfg
-	weatherCfg.PricingFunc = pricing.Fixed(1)
 
 	weather := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -808,8 +807,7 @@ func main() {
 			"condition":   "partly cloudy",
 			"wind_kph":    12,
 			"humidity":    65,
-			"price_sats":  1,
-			"note":        "This response was gated by x402. You paid 1 satoshi.",
+			"note":        "This response was gated by x402.",
 		})
 	})
 
