@@ -204,8 +204,19 @@ Full configuration reference: [docs/configuration.md](docs/configuration.md)
 ```bash
 make build          # Build server + client binaries
 make test           # Run all tests
+make verify         # Lint + test (pre-commit gate)
 make demo           # Start in demo mode (mock broadcaster, in-memory pools)
 make client         # Run CLI client against local server
+```
+
+### Reproducible build
+
+Builds from tag `v1.0.1-bsv-fix` are deterministic given the same Go version and platform:
+
+```bash
+git checkout v1.0.1-bsv-fix
+CGO_ENABLED=0 go build -o bin/x402-server ./cmd/server
+docker build -t x402-gateway:v1.0.1 .
 ```
 
 ### Protocol constraints
@@ -247,6 +258,8 @@ Implementations MUST preserve exact value conservation in transaction constructi
 | [Testing](docs/testing/README.md) | Test suites, Postman collections |
 | [Troubleshooting](docs/troubleshooting.md) | Common issues and fixes |
 | [Transaction Guarantees](docs/transaction-guarantees.md) | Value conservation, change rules, fee model |
+| [Operations](docs/OPERATIONS.md) | Deploy, verify, troubleshoot, restart |
+| [Audit Reference](docs/AUDIT.md) | Invariants, security posture, test coverage |
 
 ### Protocol and governance
 
@@ -269,6 +282,8 @@ BSV-correct transaction economics:
 - No implicit fee inflation from discarded change
 - Property-tested across 30+ scenarios with 600-value sweep regression guard
 - CI regression guard prevents re-introduction of hardcoded thresholds
+
+This version (v1.0.1-bsv-fix) is considered economically correct and production-stable. All transaction value flows are explicit, deterministic, and fully tested.
 
 ---
 

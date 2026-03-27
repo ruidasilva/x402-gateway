@@ -742,6 +742,17 @@ func main() {
 	// --- Unprotected endpoints ---
 
 	// Health check
+	const buildVersion = "v1.0.1-bsv-fix"
+	const buildCommit = "1a54d60"
+
+	mux.HandleFunc("GET /version", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"version": buildVersion,
+			"commit":  buildCommit,
+		})
+	})
+
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		profile := "A (Open Nonce)"
 		if cfg.TemplateMode {
@@ -750,7 +761,7 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
 			"status":       "ok",
-			"version":      "1.0.0",
+			"version":      buildVersion,
 			"network":      cfg.BSVNetwork,
 			"profile":      profile,
 			"nonce_pool":   noncePool.Stats(),
