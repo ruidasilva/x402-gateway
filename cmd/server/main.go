@@ -808,7 +808,7 @@ func main() {
 		ChallengeCache:        challengeCache,
 		PayeeLockingScriptHex: payeeLockingScriptHex,
 		Network:               cfg.BSVNetwork,
-		PricingFunc:           pricing.Fixed(100),
+		PricingFunc:           pricing.Fixed(int64(cfg.TemplatePriceSats)),
 		ChallengeTTL:          5 * time.Minute,
 		BindHeaders:           gatekeeper.HeaderAllowlist,
 		SettlementRecorder:    revenueTracker,
@@ -818,7 +818,7 @@ func main() {
 	expensive := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"data":      "This response cost 100 satoshis via x402",
+			"data":      fmt.Sprintf("This response cost %d satoshis via x402", cfg.TemplatePriceSats),
 			"timestamp": time.Now().Unix(),
 			"path":      r.URL.Path,
 		})
@@ -828,7 +828,7 @@ func main() {
 	mux.Handle("POST /v1/expensive", gatekeeper.Middleware(gatekeeperCfg)(expensive))
 
 	// --- Demo endpoint: /api/weather ---
-	// Price matches template price_sats (100 sats) for consistency.
+	// Inherits pricing from gatekeeperCfg (= TEMPLATE_PRICE_SATS).
 	weatherCfg := gatekeeperCfg
 
 	weather := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -958,8 +958,8 @@ func main() {
 	}
 	fmt.Printf("\n  Endpoints:\n")
 	fmt.Printf("    GET  /health          Health check\n")
-	fmt.Printf("    GET  /v1/expensive    Protected (100 sats)\n")
-	fmt.Printf("    GET  /api/weather     Demo endpoint (100 sats)\n")
+	fmt.Printf("    GET  /v1/expensive    Protected (%d sats)\n", cfg.TemplatePriceSats)
+	fmt.Printf("    GET  /api/weather     Demo endpoint (%d sats)\n", cfg.TemplatePriceSats)
 	if cfg.DelegatorEmbedded {
 		fmt.Printf("    POST /delegate/x402   Delegation (embedded)\n")
 		fmt.Printf("    POST /api/v1/tx       Fee delegator API\n")
