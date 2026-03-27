@@ -127,11 +127,12 @@ func BuildFanout(
 			requiredSats, req.OutputCount, outputSats, fee, req.FundingSatoshis)
 	}
 
-	// Add change output if there's leftover above dust.
+	// Add change output if there's any leftover.
+	// BSV has no dust limit — return any excess ≥ 1 sat as change.
 	// Change goes to ChangeAddress (typically treasury) so it remains
 	// accessible for future fan-outs, rather than stranding in the pool.
 	change := req.FundingSatoshis - totalOutputSats - fee
-	if change > 546 { // dust threshold
+	if change >= 1 {
 		changeAddr := addrStr
 		if req.ChangeAddress != "" {
 			changeAddr = req.ChangeAddress
@@ -172,9 +173,9 @@ func BuildFanout(
 		}
 	}
 
-	// Build change UTXO for mempool tracking (when change > dust)
+	// Build change UTXO for mempool tracking
 	var changeUTXO *FundingUTXO
-	if change > 546 {
+	if change >= 1 {
 		changeAddr := addrStr
 		if req.ChangeAddress != "" {
 			changeAddr = req.ChangeAddress

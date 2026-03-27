@@ -298,16 +298,17 @@ func (d *Delegator) Accept(req DelegationRequest) (*DelegationResult, error) {
 	}
 
 	// ── Step 7: Add change output if fee inputs exceed needed amount ──
+	// BSV has no dust limit (unlike BTC's 546-sat threshold). Any excess
+	// ≥ 1 sat is returned as change to the fee payer address.
 	finalMinerFee := CalculateFee(tx, 0, d.feeRate) // all inputs already added
+	totalInputSats := feeInputSats + existingInputSats
 	var change uint64
-	if feeInputSats > totalOutputSats+finalMinerFee {
-		change = feeInputSats - totalOutputSats - finalMinerFee
-		if change > 546 { // above dust threshold
+	if totalInputSats > totalOutputSats+finalMinerFee {
+		change = totalInputSats - totalOutputSats - finalMinerFee
+		if change >= 1 {
 			if err := tx.PayToAddress(d.address.AddressString, change); err != nil {
 				return nil, fmt.Errorf("add change output: %w", err)
 			}
-		} else {
-			change = 0 // dust goes to miner as extra fee
 		}
 	}
 
@@ -330,7 +331,7 @@ func (d *Delegator) Accept(req DelegationRequest) (*DelegationResult, error) {
 	for _, out := range tx.Outputs {
 		finalOutputSats += out.Satoshis
 	}
-	totalInputSats := feeInputSats + existingInputSats
+	totalInputSats = feeInputSats + existingInputSats // recompute after potential change output
 	if totalInputSats < finalOutputSats {
 		return nil, fmt.Errorf(
 			"consensus violation: total inputs (%d sats = %d fee + %d nonce) < outputs (%d sats) — transaction would be rejected",
