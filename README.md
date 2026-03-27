@@ -105,6 +105,7 @@ The server does not trust the client. All verification is performed independentl
 - **Mempool-gated execution** -- When `require_mempool_accept` is true (default), the server verifies mempool acceptance before serving the resource. No execution occurs on pending or failed transactions.
 - **Client-broadcast model** -- The client MUST broadcast the settlement transaction. The server and delegator never broadcast.
 - **Ordered verification** -- The server follows a strict verification sequence (spec Section 7): decode proof, validate challenge hash, verify request binding, check expiry, decode transaction, verify nonce spend, verify payment output, check mempool acceptance.
+- **Exact value conservation** -- Implementations MUST preserve exact value conservation in transaction construction. Any remainder MUST be represented as a change output when >= 1 sat. No value may be implicitly discarded into transaction fees. BSV does not enforce a dust threshold.
 
 ---
 
@@ -218,6 +219,20 @@ The x402 protocol specification (v1.0) is frozen. Changes to this implementation
 - Replay protection via settlement-layer nonce spend (not server-side tracking)
 
 If a change alters canonical encoding or verification behavior, it must be accompanied by updated test vectors and cross-language verification.
+
+### External API assumptions
+
+**WhatsOnChain (WoC) UTXO endpoint:**
+
+- `200` with `[]` = valid address with no unspent outputs.
+- `200` with `[{...}]` = valid unspent output list.
+- `404` = endpoint failure or invalid route. MUST be treated as error. The watcher MUST NOT silently clear UTXOs on 404.
+- Any non-200 response MUST be treated as a transient failure. Previously fetched UTXOs MUST be preserved until a successful poll replaces them.
+- Malformed JSON (e.g. object instead of array) MUST be treated as error.
+
+### Transaction value conservation
+
+Implementations MUST preserve exact value conservation in transaction construction. Any remainder MUST be represented as a change output when >= 1 sat. No value may be implicitly discarded into transaction fees. BSV does not enforce a dust threshold.
 
 ---
 

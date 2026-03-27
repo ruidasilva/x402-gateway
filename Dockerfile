@@ -35,7 +35,7 @@ COPY . .
 # Copy the React build output into the Go embed directory
 COPY --from=dashboard /cmd/server/static/ ./cmd/server/static/
 
-# Build all binaries
+# Only build tracked binaries. Do not reference local or gitignored paths.
 RUN CGO_ENABLED=0 go build -o /bin/x402-server ./cmd/server
 RUN CGO_ENABLED=0 go build -o /bin/x402-client ./cmd/client
 

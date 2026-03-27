@@ -1,10 +1,10 @@
-.PHONY: build test lint run clean demo client setup deploy dashboard-dev dashboard-build
+.PHONY: build test lint run clean demo client deploy dashboard-dev dashboard-build
 
 # ─── Build ──────────────────────────────────────────────────
+# Only build tracked binaries. Do not reference local or gitignored paths.
 build: dashboard-build
 	go build -o bin/x402-server ./cmd/server
 	go build -o bin/x402-client ./cmd/client
-	go build -o bin/x402-setup ./cmd/setup
 
 test:
 	go test ./... -v -count=1
@@ -26,11 +26,7 @@ dashboard-dev:
 dashboard-build:
 	cd dashboard && npm ci && npm run build
 
-# ─── Setup ──────────────────────────────────────────────────
-setup:
-	go run ./cmd/setup
-
-deploy: setup
+deploy:
 	docker compose up -d --build
 
 # ─── Demo mode ───────────────────────────────────────────────

@@ -327,17 +327,31 @@ func (d *Delegator) Accept(req DelegationRequest) (*DelegationResult, error) {
 		tx.Inputs[feeInputIdx].UnlockingScript = unlockScript
 	}
 
-	// ── Pre-return validation: consensus rule check ──
-	// Verify total inputs (fee + nonce) cover all outputs.
+	// ── Pre-return validation: exact value conservation ──
+	// Implementations MUST preserve exact value conservation.
+	// total_inputs = total_outputs + miner_fee
+	// No value may be implicitly discarded into transaction fees.
 	var finalOutputSats uint64
 	for _, out := range tx.Outputs {
 		finalOutputSats += out.Satoshis
 	}
 	totalInputSats = feeInputSats + existingInputSats // recompute after potential change output
+	actualMinerFee := totalInputSats - finalOutputSats
 	if totalInputSats < finalOutputSats {
 		return nil, fmt.Errorf(
-			"consensus violation: total inputs (%d sats = %d fee + %d nonce) < outputs (%d sats) — transaction would be rejected",
-			totalInputSats, feeInputSats, existingInputSats, finalOutputSats,
+			"consensus violation: total inputs (%d sats) < total outputs (%d sats)",
+			totalInputSats, finalOutputSats,
+		)
+	}
+	if actualMinerFee != finalMinerFee && change == 0 {
+		// If there's no change output, the actual miner fee should equal the
+		// estimated fee. A discrepancy means value was silently discarded.
+		d.logger.Warn("value conservation warning: actual miner fee differs from estimate",
+			"actual_miner_fee", actualMinerFee,
+			"estimated_miner_fee", finalMinerFee,
+			"total_inputs", totalInputSats,
+			"total_outputs", finalOutputSats,
+			"change", change,
 		)
 	}
 

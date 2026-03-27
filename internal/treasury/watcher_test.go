@@ -185,6 +185,21 @@ func TestGetFundingNone(t *testing.T) {
 	}
 }
 
+func TestMalformedJSONResponse(t *testing.T) {
+	// WoC returning malformed JSON MUST be treated as error.
+	// The watcher must NOT silently clear UTXOs on parse failure.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"error": "not an array"}`))
+	}))
+	defer srv.Close()
+
+	tw := newTestWatcher(t, srv.URL)
+	if err := tw.poll(); err == nil {
+		t.Fatal("poll should return error on malformed JSON (object instead of array), but got nil")
+	}
+}
+
 func TestAPIError(t *testing.T) {
 	callCount := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
