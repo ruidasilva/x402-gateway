@@ -27,11 +27,14 @@ x402 interoperability is defined by canonical test vectors. Independent implemen
 ### 1. Run the system
 
 ```bash
-# Docker (production-like: gateway + delegator + Redis)
-docker compose up --build
-
-# Or local demo (in-memory, mock broadcaster, no Docker required)
+# Local demo (zero-config: generates keys, in-memory pools, mock broadcaster)
 make demo
+
+# Or Docker demo (zero-config: generates keys, then runs gateway + delegator + Redis)
+make docker-demo
+
+# Or production deploy (requires .env — run `make setup` or `go run ./cmd/keygen` first)
+make deploy
 ```
 
 ### 2. Verify it works

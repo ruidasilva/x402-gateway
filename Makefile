@@ -1,4 +1,4 @@
-.PHONY: build test lint verify run clean demo client deploy dashboard-dev dashboard-build
+.PHONY: build test lint verify run clean demo docker-demo client deploy dashboard-dev dashboard-build
 
 # ─── Build ──────────────────────────────────────────────────
 # Only build tracked binaries. Do not reference local or gitignored paths.
@@ -32,7 +32,21 @@ dashboard-build:
 	cd dashboard && npm ci && npm run build
 
 deploy:
+	@if [ ! -f .env ]; then \
+		echo "No .env found. Run 'make setup' or 'go run ./cmd/keygen' first."; \
+		exit 1; \
+	fi
 	docker compose up -d --build
+
+# ─── Docker Demo ─────────────────────────────────────────────
+# Zero-config Docker startup: generates .env if missing, then builds.
+docker-demo:
+	@if [ ! -f .env ]; then \
+		echo "No .env found — generating demo key..."; \
+		go run ./cmd/keygen; \
+		echo ""; \
+	fi
+	docker compose up --build
 
 # ─── Demo mode ───────────────────────────────────────────────
 # One command to go from zero to running:
