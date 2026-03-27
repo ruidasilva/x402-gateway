@@ -114,7 +114,10 @@ func (p *MemoryPool) Mint(fundingTxID string, fundingVout uint32, fundingScript 
 		return nil, fmt.Errorf("insufficient funding: need %d sats, have %d", requiredSats, fundingSatoshis)
 	}
 
-	// BSV has no dust limit — return any excess ≥ 1 sat as change.
+	// BSV does not enforce a dust threshold.
+	// Any output >= 1 sat is valid.
+	// Change is created whenever remainder >= 1 sat.
+	// No value is ever silently discarded to fees.
 	change := fundingSatoshis - uint64(count) - fee
 	if change >= 1 {
 		if err := tx.PayToAddress(p.Address(), change); err != nil {

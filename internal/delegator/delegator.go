@@ -298,8 +298,10 @@ func (d *Delegator) Accept(req DelegationRequest) (*DelegationResult, error) {
 	}
 
 	// ── Step 7: Add change output if fee inputs exceed needed amount ──
-	// BSV has no dust limit (unlike BTC's 546-sat threshold). Any excess
-	// ≥ 1 sat is returned as change to the fee payer address.
+	// BSV does not enforce a dust threshold.
+	// Any output >= 1 sat is valid.
+	// Change is created whenever remainder >= 1 sat.
+	// No value is ever silently discarded to fees.
 	finalMinerFee := CalculateFee(tx, 0, d.feeRate) // all inputs already added
 	totalInputSats := feeInputSats + existingInputSats
 	var change uint64

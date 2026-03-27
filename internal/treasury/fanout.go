@@ -40,7 +40,7 @@ type FanoutRequest struct {
 type FanoutResult struct {
 	TxID       string       // txid of the fan-out transaction
 	UTXOs      []pool.UTXO  // newly created pool UTXOs (vout 0..N-1)
-	ChangeUTXO *FundingUTXO // change output back to treasury (nil if none/dust)
+	ChangeUTXO *FundingUTXO // change output back to treasury (nil if remainder is 0)
 }
 
 // BuildFanout constructs and broadcasts a fan-out transaction that splits one
@@ -127,8 +127,10 @@ func BuildFanout(
 			requiredSats, req.OutputCount, outputSats, fee, req.FundingSatoshis)
 	}
 
-	// Add change output if there's any leftover.
-	// BSV has no dust limit — return any excess ≥ 1 sat as change.
+	// BSV does not enforce a dust threshold.
+	// Any output >= 1 sat is valid.
+	// Change is created whenever remainder >= 1 sat.
+	// No value is ever silently discarded to fees.
 	// Change goes to ChangeAddress (typically treasury) so it remains
 	// accessible for future fan-outs, rather than stranding in the pool.
 	change := req.FundingSatoshis - totalOutputSats - fee
