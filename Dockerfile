@@ -38,14 +38,13 @@ COPY --from=dashboard /cmd/server/static/ ./cmd/server/static/
 # Build all binaries
 RUN CGO_ENABLED=0 go build -o /bin/x402-server ./cmd/server
 RUN CGO_ENABLED=0 go build -o /bin/x402-client ./cmd/client
-RUN CGO_ENABLED=0 go build -o /bin/x402-setup ./cmd/setup
 
 # --- Runtime image ---
 FROM alpine:3.19
 
 RUN apk add --no-cache ca-certificates
 
-COPY --from=builder /bin/x402-server /bin/x402-client /bin/x402-setup /bin/
+COPY --from=builder /bin/x402-server /bin/x402-client /bin/
 
 EXPOSE 8402
 

@@ -106,6 +106,9 @@ func TestEmptyResponse(t *testing.T) {
 }
 
 func TestNotFoundResponse(t *testing.T) {
+	// WoC returns 200 with an empty array when an address has no UTXOs.
+	// A 404 indicates the endpoint changed or the address format is invalid.
+	// The watcher MUST treat 404 as an error to avoid silently clearing UTXOs.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		w.Write([]byte("Address not found"))
@@ -113,13 +116,8 @@ func TestNotFoundResponse(t *testing.T) {
 	defer srv.Close()
 
 	tw := newTestWatcher(t, srv.URL)
-	if err := tw.poll(); err != nil {
-		t.Fatalf("poll should succeed on 404, got: %v", err)
-	}
-
-	utxos := tw.GetUTXOs()
-	if len(utxos) != 0 {
-		t.Fatalf("expected 0 UTXOs on 404, got %d", len(utxos))
+	if err := tw.poll(); err == nil {
+		t.Fatal("poll should return error on 404, but got nil")
 	}
 }
 
