@@ -3,8 +3,8 @@ x402-server
 x402-client
 /server
 /client
-keygen
-setup
+/keygen
+/setup
 *.exe
 *.exe~
 *.dll
