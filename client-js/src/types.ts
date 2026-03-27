@@ -1,130 +1,128 @@
-// Copyright 2026 Merkle Works
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
+// x402 SDK — Wire-format types
+// Matches x402.md v1.0 §4 and §5 exactly.
 
-// ---------------------------------------------------------------------------
-// Protocol types
-// ---------------------------------------------------------------------------
-
-/** Nonce UTXO reference included in a 402 challenge. */
 export interface NonceRef {
-  txid: string
-  vout: number
-  satoshis: number
-  locking_script_hex: string
+  readonly txid: string
+  readonly vout: number
+  readonly satoshis: number
+  readonly locking_script_hex: string
 }
 
-/** Pre-signed template (Profile B only). */
 export interface TemplateRef {
-  rawtx_hex: string
-  price_sats: number
+  readonly rawtx_hex: string
+  readonly price_sats: number
 }
 
-/** Decoded 402 challenge from the X402-Challenge header. */
 export interface Challenge {
-  v: string
-  scheme: string
-  amount_sats: number
-  payee_locking_script_hex: string
-  expires_at: number
-  domain: string
-  method: string
-  path: string
-  query: string
-  req_headers_sha256: string
-  req_body_sha256: string
-  nonce_utxo: NonceRef
-  template?: TemplateRef | null
-  require_mempool_accept: boolean
-  confirmations_required: number
+  readonly v: 1
+  readonly scheme: "bsv-tx-v1"
+  readonly amount_sats: number
+  readonly payee_locking_script_hex: string
+  readonly expires_at: number
+  readonly domain: string
+  readonly method: string
+  readonly path: string
+  readonly query: string
+  readonly req_headers_sha256: string
+  readonly req_body_sha256: string
+  readonly nonce_utxo: NonceRef
+  readonly require_mempool_accept: boolean
+  readonly template?: TemplateRef
 }
-
-/** Result of parsing the X402-Challenge header. */
-export interface ParsedChallenge {
-  challenge: Challenge
-  /** Raw canonical JSON bytes (for hashing). */
-  rawBytes: Buffer
-  /** SHA-256 hex of rawBytes. */
-  hash: string
-}
-
-// ---------------------------------------------------------------------------
-// Client configuration
-// ---------------------------------------------------------------------------
-
-export interface X402ClientConfig {
-  /** Base URL of the delegator service. */
-  delegatorUrl: string
-  /** Path on the delegator for tx completion. @default "/delegate/x402" */
-  delegatorPath?: string
-  /** Base URL for WhatsOnChain broadcast API. @default WOC_MAINNET */
-  broadcastUrl?: string
-  /** Extra headers sent with every proxied request. */
-  defaultHeaders?: Record<string, string>
-  /** Override the global fetch (useful for testing). */
-  fetch?: typeof globalThis.fetch
-}
-
-// ---------------------------------------------------------------------------
-// Delegator
-// ---------------------------------------------------------------------------
-
-export interface DelegationRequest {
-  partial_tx_hex: string
-  challenge_hash: string
-  payee_locking_script_hex?: string
-  amount_sats?: number
-  nonce_outpoint: {
-    txid: string
-    vout: number
-    satoshis?: number
-  }
-  template_mode?: boolean
-}
-
-export interface DelegationResult {
-  txid: string
-  rawtx_hex: string
-  accepted: boolean
-}
-
-export interface Delegator {
-  completeTransaction(request: DelegationRequest): Promise<DelegationResult>
-}
-
-// ---------------------------------------------------------------------------
-// Broadcaster
-// ---------------------------------------------------------------------------
-
-export interface Broadcaster {
-  broadcast(rawtx: string): Promise<string>
-}
-
-// ---------------------------------------------------------------------------
-// Proof
-// ---------------------------------------------------------------------------
 
 export interface RequestBinding {
-  method: string
-  path: string
-  query: string
-  req_headers_sha256: string
-  req_body_sha256: string
+  readonly method: string
+  readonly path: string
+  readonly query: string
+  readonly req_headers_sha256: string
+  readonly req_body_sha256: string
 }
 
 export interface Payment {
-  txid: string
-  rawtx_b64: string
+  readonly txid: string
+  readonly rawtx_b64: string
 }
 
 export interface Proof {
-  v: number
-  scheme: string
-  challenge_sha256: string
-  request: RequestBinding
-  payment: Payment
+  readonly v: 1
+  readonly scheme: "bsv-tx-v1"
+  readonly challenge_sha256: string
+  readonly request: RequestBinding
+  readonly payment: Payment
 }
+
+export interface ParsedChallenge {
+  readonly challenge: Challenge
+  readonly canonicalBytes: Uint8Array
+  readonly challengeHash: string
+}
+
+export interface CompletedTransaction {
+  readonly txid: string
+  readonly rawtxHex: string
+}
+
+export interface RequestContext {
+  readonly url: URL
+  readonly method: string
+  readonly headers: Headers
+  readonly body: string | Uint8Array | null
+}
+
+export interface DelegationInput {
+  readonly partialTxHex: string
+  readonly nonceUtxo: { readonly txid: string; readonly vout: number }
+  readonly challengeHash: string
+}
+
+export interface Delegator {
+  complete(input: DelegationInput): Promise<CompletedTransaction>
+}
+
+export interface Broadcaster {
+  broadcast(rawtxHex: string): Promise<string>
+}
+
+export interface TransactionBuilder {
+  buildPartial(challenge: Challenge): Promise<string>
+}
+
+// Step-chain types
+export interface PaymentSession {
+  readonly challenge: Challenge
+  readonly challengeHash: string
+  readonly request: RequestContext
+  buildPartialTransaction(): Promise<PartialTxStep>
+}
+
+export interface PartialTxStep {
+  readonly partialTxHex: string
+  finalizeTransaction(): Promise<FinalizedTxStep>
+}
+
+export interface FinalizedTxStep {
+  readonly txid: string
+  readonly rawtxHex: string
+  broadcast(): Promise<BroadcastStep>
+}
+
+export interface BroadcastStep {
+  readonly txid: string
+  readonly rawtxHex: string
+  buildProof(): ProofStep
+}
+
+export interface ProofStep {
+  readonly proof: Proof
+  readonly header: string
+  retry(): Promise<Response>
+}
+
+// Debug surface — optional, non-invasive visibility into protocol steps.
+export type DebugEvent =
+  | { readonly type: "challenge"; readonly challenge: Challenge; readonly challengeHash: string }
+  | { readonly type: "binding"; readonly binding: RequestBinding }
+  | { readonly type: "transaction"; readonly txid: string; readonly rawtxHex: string }
+  | { readonly type: "broadcast"; readonly txid: string }
+  | { readonly type: "proof"; readonly proof: Proof }
+  | { readonly type: "retry"; readonly status: number }

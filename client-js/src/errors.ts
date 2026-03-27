@@ -1,50 +1,61 @@
-// Copyright 2026 Merkle Works
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
+// x402 SDK — Typed errors. No generic Error in public API.
 
-/** Thrown when the 402 challenge cannot be parsed or is invalid. */
-export class X402ChallengeError extends Error {
+export class ChallengeError extends Error {
   constructor(message: string) {
     super(message)
-    this.name = "X402ChallengeError"
+    this.name = "ChallengeError"
   }
 }
 
-/** Thrown when the delegator rejects or fails to complete the transaction. */
-export class DelegatorError extends Error {
-  public readonly code?: string
-  public readonly status?: number
+export class ChallengeExpiredError extends ChallengeError {
+  constructor(
+    public readonly expiresAt: number,
+    public readonly currentTime: number,
+  ) {
+    super(`Challenge expired at ${expiresAt} (current time: ${currentTime})`)
+  }
+}
 
-  constructor(message: string, code?: string, status?: number) {
+export class DelegationError extends Error {
+  readonly name = "DelegationError" as const
+  constructor(
+    message: string,
+    public readonly status?: number,
+    public readonly code?: string,
+  ) {
     super(message)
-    this.name = "DelegatorError"
-    this.code = code
-    this.status = status
   }
 }
 
-/** Thrown when the transaction cannot be broadcast to the network. */
 export class BroadcastError extends Error {
-  public readonly code?: string
-
-  constructor(message: string, code?: string) {
+  readonly name = "BroadcastError" as const
+  constructor(
+    message: string,
+    public readonly code?: string,
+  ) {
     super(message)
-    this.name = "BroadcastError"
-    this.code = code
   }
 }
 
-/** Thrown when the server rejects the proof on retry. */
 export class ProofRejectedError extends Error {
-  public readonly status: number
-
-  constructor(message: string, status: number) {
+  readonly name = "ProofRejectedError" as const
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly serverCode?: string,
+    public readonly serverMessage?: string,
+  ) {
     super(message)
-    this.name = "ProofRejectedError"
-    this.status = status
+  }
+}
+
+export class BindingMismatchError extends Error {
+  readonly name = "BindingMismatchError" as const
+  constructor(
+    public readonly field: "method" | "path" | "query" | "domain",
+    public readonly expected: string,
+    public readonly actual: string,
+  ) {
+    super(`Binding mismatch on ${field}: expected "${expected}", got "${actual}"`)
   }
 }

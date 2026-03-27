@@ -1,50 +1,60 @@
-// Copyright 2026 Merkle Works
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
+// x402 SDK — Proof construction.
 
-import type { Proof, RequestBinding } from "./types.js"
+import type { Proof, RequestBinding, RequestContext, CompletedTransaction, Challenge } from "./types.js"
 import { hashHeaders, hashBody } from "./challenge.js"
+import { BindingMismatchError } from "./errors.js"
 
-/**
- * Build the X402-Proof header value.
- *
- * The proof is JSON encoded with base64url (no padding). The inner
- * `rawtx_b64` field uses standard base64 (with padding) per the spec.
- */
-export function buildProofHeader(params: {
-  txid: string
-  rawtxHex: string
+export function buildRequestBinding(request: RequestContext): RequestBinding {
+  return {
+    method: request.method.toUpperCase(),
+    path: request.url.pathname,
+    query: request.url.search.replace(/^\?/, ""),
+    req_headers_sha256: hashHeaders(request.headers),
+    req_body_sha256: hashBody(request.body),
+  }
+}
+
+export function buildProof(params: {
+  tx: CompletedTransaction
   challengeHash: string
-  url: URL
-  method: string
-  headers: Headers | Record<string, string>
-  body: string | Uint8Array | null | undefined
-}): string {
-  // Per x402.md §5: request binding has 5 fields (no domain).
-  const request: RequestBinding = {
-    method: params.method.toUpperCase(),
-    path: params.url.pathname,
-    query: params.url.search.replace(/^\?/, ""),
-    req_headers_sha256: hashHeaders(params.headers),
-    req_body_sha256: hashBody(params.body),
+  challenge: Challenge
+  request: RequestContext
+}): { proof: Proof; header: string } {
+  // Pre-flight binding check
+  const req = params.request
+  const ch = params.challenge
+
+  if (req.method.toUpperCase() !== ch.method) {
+    throw new BindingMismatchError("method", ch.method, req.method.toUpperCase())
+  }
+  if (req.url.pathname !== ch.path) {
+    throw new BindingMismatchError("path", ch.path, req.url.pathname)
+  }
+  const reqQuery = req.url.search.replace(/^\?/, "")
+  if (reqQuery !== ch.query) {
+    throw new BindingMismatchError("query", ch.query, reqQuery)
+  }
+  if (req.url.host !== ch.domain) {
+    throw new BindingMismatchError("domain", ch.domain, req.url.host)
   }
 
-  // Per x402.md §5: v is integer, payment is nested under "payment".
+  const binding = buildRequestBinding(req)
+
   const proof: Proof = {
     v: 1,
     scheme: "bsv-tx-v1",
     challenge_sha256: params.challengeHash,
-    request,
+    request: binding,
     payment: {
-      txid: params.txid,
-      rawtx_b64: Buffer.from(params.rawtxHex, "hex").toString("base64"),
+      txid: params.tx.txid,
+      rawtx_b64: Buffer.from(params.tx.rawtxHex, "hex").toString("base64"),
     },
   }
 
-  const json = JSON.stringify(proof)
-  return Buffer.from(json, "utf-8").toString("base64url")
+  const header = Buffer.from(JSON.stringify(proof), "utf-8").toString("base64url")
+  return { proof, header }
+}
+
+export function encodeProofHeader(proof: Proof): string {
+  return Buffer.from(JSON.stringify(proof), "utf-8").toString("base64url")
 }
