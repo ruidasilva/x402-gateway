@@ -807,11 +807,8 @@ func main() {
 	mux.Handle("POST /v1/expensive", gatekeeper.Middleware(gatekeeperCfg)(expensive))
 
 	// --- Demo endpoint: /api/weather ---
-	// Price is 1 sat. The nonce pool's templates have price_sats=100 baked in,
-	// but that's the output amount in the pre-signed tx — it overpays relative
-	// to amount_sats=1. Spec §6 allows this: "greater than or equal to amount_sats".
+	// Price matches template price_sats (100 sats) for consistency.
 	weatherCfg := gatekeeperCfg
-	weatherCfg.PricingFunc = pricing.Fixed(1)
 
 	weather := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -941,7 +938,7 @@ func main() {
 	fmt.Printf("\n  Endpoints:\n")
 	fmt.Printf("    GET  /health          Health check\n")
 	fmt.Printf("    GET  /v1/expensive    Protected (100 sats)\n")
-	fmt.Printf("    GET  /api/weather     Demo endpoint (1 sat)\n")
+	fmt.Printf("    GET  /api/weather     Demo endpoint (100 sats)\n")
 	if cfg.DelegatorEmbedded {
 		fmt.Printf("    POST /delegate/x402   Delegation (embedded)\n")
 		fmt.Printf("    POST /api/v1/tx       Fee delegator API\n")
